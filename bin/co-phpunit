@@ -1,0 +1,66 @@
+#!/usr/bin/env php
+<?php
+
+declare(strict_types=1);
+
+/*
+ * Runs PHPUnit inside a root OpenSwoole coroutine with runtime hooks enabled, so every test
+ * executes with a live event loop: tests may spawn coroutines, use channels, pooled
+ * connections and hooked I/O directly. PHPUnit 12 keeps TestCase::runTest() private, so
+ * per-test wrapping is not possible; wrapping the whole run is the supported alternative.
+ *
+ * exit() inside a coroutine throws OpenSwoole\ExitException on PHP >= 8.4; it is translated
+ * back into the process exit code here.
+ */
+
+use OpenSwoole\Coroutine;
+use OpenSwoole\ExitException;
+use OpenSwoole\Runtime;
+use OpenSwoole\Timer;
+use PHPUnit\TextUI\Application;
+
+foreach ([__DIR__ . '/../vendor/autoload.php', __DIR__ . '/../../../autoload.php'] as $autoload) {
+    if (is_file($autoload)) {
+        require $autoload;
+        break;
+    }
+}
+
+if (!extension_loaded('openswoole')) {
+    fwrite(STDERR, "co-phpunit: the openswoole extension is required\n");
+    exit(1);
+}
+
+// OpenSwoole library warnings (e.g. the io_uring file engine probing on kernels < 5.1, which is
+// retried on every AIO batch) would interleave with PHPUnit output; keep them in a log file.
+$logDir = getcwd() . '/var/log';
+if (!is_dir($logDir)) {
+    mkdir($logDir, 0o775, true);
+}
+Coroutine::set(['log_file' => $logDir . '/openswoole-tests.log', 'log_level' => OPENSWOOLE_LOG_WARNING]);
+
+Runtime::enableCoroutine(Runtime::HOOK_ALL);
+
+$exitCode = 1;
+$failure = null;
+
+Coroutine::run(static function () use (&$exitCode, &$failure): void {
+    try {
+        $result = (new Application())->run($_SERVER['argv']);
+        $exitCode = is_int($result) ? $result : 0;
+    } catch (ExitException $e) {
+        $exitCode = (int) $e->getStatus();
+    } catch (Throwable $e) {
+        $failure = $e;
+        $exitCode = 255;
+    } finally {
+        // Never let a forgotten timer keep the reactor alive after PHPUnit finished.
+        Timer::clearAll();
+    }
+});
+
+if ($failure !== null) {
+    fwrite(STDERR, 'co-phpunit: uncaught ' . $failure::class . ': ' . $failure->getMessage() . "\n" . $failure->getTraceAsString() . "\n");
+}
+
+exit($exitCode);

@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ['8.3', '8.4', '8.5']
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          extensions: openswoole-26.2.0, redis, pdo_mysql, mbstring
+          tools: composer:v2
+          coverage: none
+
+      - name: Install MariaDB and Redis binaries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mariadb-server redis-server
+          sudo systemctl stop mariadb redis-server || true
+
+      - run: composer install --no-interaction --no-progress
+
+      - run: composer validate --strict
+
+      - name: Coding standards
+        run: vendor/bin/php-cs-fixer check --diff
+
+      - name: Static analysis
+        run: vendor/bin/phpstan analyse --no-progress --memory-limit=1G
+
+      - name: Start test services
+        run: bin/services up
+
+      - name: Unit tests
+        run: php bin/co-phpunit --testsuite unit
+
+      - name: Integration tests
+        run: php bin/co-phpunit --testsuite integration
+
+      - name: Stop test services
+        if: always()
+        run: bin/services down
