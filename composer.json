@@ -1,0 +1,63 @@
+{
+    "name": "omnitrix/omnitrix",
+    "description": "Omnitrix: a high-performance asynchronous PHP API framework built on OpenSwoole.",
+    "type": "library",
+    "license": "MIT",
+    "keywords": ["omnitrix", "framework", "api", "rest", "async", "coroutine", "openswoole", "high-performance"],
+    "authors": [
+        {
+            "name": "Ajmal Alkhaledi",
+            "email": "ajmalalkhaledi@gmail.com",
+            "role": "Maintainer"
+        }
+    ],
+    "require": {
+        "php": ">=8.3",
+        "ext-json": "*",
+        "ext-mbstring": "*",
+        "ext-openswoole": ">=26.2.0",
+        "nikic/fast-route": "^1.3",
+        "omnitrix/core": "^0.1",
+        "psr/container": "^2.0",
+        "psr/log": "^3.0"
+    },
+    "require-dev": {
+        "ext-pdo_mysql": "*",
+        "ext-redis": "*",
+        "friendsofphp/php-cs-fixer": "^3.95",
+        "phpstan/phpstan": "^2.3",
+        "phpstan/phpstan-strict-rules": "^2.0",
+        "phpunit/phpunit": "^12.5"
+    },
+    "suggest": {
+        "ext-pdo_mysql": "Database support for MySQL/MariaDB (mysqlnd builds only)",
+        "ext-redis": "Redis, cache, queue and distributed rate limiting (phpredis >= 6.3)",
+        "phpunit/phpunit": "Run application tests inside a coroutine with vendor/bin/omnitrix-phpunit"
+    },
+    "autoload": {
+        "psr-4": { "Omnitrix\\": "src/" }
+    },
+    "autoload-dev": {
+        "psr-4": { "Omnitrix\\Tests\\": "tests/" }
+    },
+    "bin": ["bin/omnitrix-phpunit"],
+    "extra": {
+        "branch-alias": { "dev-main": "0.1.x-dev" }
+    },
+    "config": {
+        "sort-packages": true,
+        "optimize-autoloader": true,
+        "allow-plugins": false
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true,
+    "scripts": {
+        "lint": "php-cs-fixer check --diff",
+        "lint:fix": "php-cs-fixer fix",
+        "stan": "phpstan analyse --memory-limit=1G",
+        "test:unit": "bin/omnitrix-phpunit --testsuite unit",
+        "test:integration": "bin/omnitrix-phpunit --testsuite integration",
+        "test": "bin/omnitrix-phpunit --testsuite unit,integration",
+        "check": ["@composer validate --strict", "@lint", "@stan", "@test"]
+    }
+}

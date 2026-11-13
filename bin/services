@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+# Local MariaDB and Redis for the integration test suite, run as unprivileged processes.
+# Usage: bin/services up|down|status|reset|restart-mysql|restart-redis
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+VAR="$ROOT/var"
+DB_PORT="${OMNITRIX_TEST_DB_PORT:-33306}"
+DB_NAME="${OMNITRIX_TEST_DB_NAME:-omnitrix_test}"
+REDIS_PORT="${OMNITRIX_TEST_REDIS_PORT:-63790}"
+MYSQL_DIR="$VAR/mysql"; REDIS_DIR="$VAR/redis"
+MYSQL_PID="$MYSQL_DIR/mariadbd.pid"; REDIS_PID="$REDIS_DIR/redis.pid"
+MYSQL_SOCK="$MYSQL_DIR/mariadbd.sock"
+
+need() { command -v "$1" >/dev/null 2>&1 || { echo "missing binary: $1" >&2; exit 1; }; }
+alive() { [ -f "$1" ] && kill -0 "$(cat "$1")" 2>/dev/null; }
+# Starts a daemon in its own session without inheriting descriptors other than 0-2, so a
+# caller reading this script's output (a test runner pipe) is not kept open by the daemon.
+# Always invoked in the background (`detach ... &`), so `exec` replaces only that subshell.
+detach() {
+  local fd
+  for fd in /proc/$BASHPID/fd/*; do
+    fd=${fd##*/}
+    if [ "$fd" -gt 2 ] 2>/dev/null; then eval "exec $fd>&-" 2>/dev/null || true; fi
+  done
+  exec setsid nohup "$@"
+}
+
+mysql_up() {
+  need mariadbd; need mariadb; need mariadb-install-db
+  mkdir -p "$MYSQL_DIR"
+  if alive "$MYSQL_PID"; then echo "mariadb: already running (pid $(cat "$MYSQL_PID"))"; return; fi
+  if [ ! -d "$MYSQL_DIR/data/mysql" ]; then
+    echo "mariadb: initialising datadir (small InnoDB logs to save disk)"
+    mariadb-install-db --datadir="$MYSQL_DIR/data" --auth-root-authentication-method=normal --skip-test-db \
+      --innodb-log-file-size=16M --innodb-buffer-pool-size=64M >"$MYSQL_DIR/install.log" 2>&1
+  fi
+  detach mariadbd --no-defaults --datadir="$MYSQL_DIR/data" --port="$DB_PORT" --bind-address=127.0.0.1 \
+    --socket="$MYSQL_SOCK" --pid-file="$MYSQL_PID" --skip-name-resolve \
+    --innodb-buffer-pool-size=64M --innodb-log-file-size=16M --innodb-flush-log-at-trx-commit=2 \
+    --max-connections=500 --log-error="$MYSQL_DIR/error.log" >/dev/null 2>&1 &
+  for _ in $(seq 1 60); do
+    if mariadb --protocol=tcp -h127.0.0.1 -P"$DB_PORT" -uroot -e "SELECT 1" >/dev/null 2>&1; then
+      mariadb --protocol=tcp -h127.0.0.1 -P"$DB_PORT" -uroot -e "CREATE DATABASE IF NOT EXISTS \`$DB_NAME\`"
+      echo "mariadb: ready on 127.0.0.1:$DB_PORT (db $DB_NAME)"; return
+    fi; sleep 0.5
+  done
+  echo "mariadb: failed to start, see $MYSQL_DIR/error.log" >&2; exit 1
+}
+mysql_down() {
+  if alive "$MYSQL_PID"; then kill "$(cat "$MYSQL_PID")"; for _ in $(seq 1 60); do alive "$MYSQL_PID" || break; sleep 0.5; done; echo "mariadb: stopped"; else echo "mariadb: not running"; fi
+}
+redis_up() {
+  need redis-server; need redis-cli
+  mkdir -p "$REDIS_DIR"
+  if alive "$REDIS_PID"; then echo "redis: already running (pid $(cat "$REDIS_PID"))"; return; fi
+  local extra=()
+  # Redis refuses to start on some aarch64 kernels because of a copy-on-write bug that only
+  # affects background saving; persistence is disabled here, so the check can be skipped.
+  if [ "$(uname -m)" = "aarch64" ]; then extra+=(--ignore-warnings ARM64-COW-BUG); fi
+  detach redis-server --port "$REDIS_PORT" --bind 127.0.0.1 --dir "$REDIS_DIR" --save "" --appendonly no \
+    --pidfile "$REDIS_PID" --logfile "$REDIS_DIR/redis.log" "${extra[@]}" --daemonize no >/dev/null 2>&1 &
+  for _ in $(seq 1 40); do
+    if [ "$(redis-cli -p "$REDIS_PORT" ping 2>/dev/null)" = "PONG" ]; then echo "redis: ready on 127.0.0.1:$REDIS_PORT"; return; fi; sleep 0.25
+  done
+  echo "redis: failed to start, see $REDIS_DIR/redis.log" >&2; exit 1
+}
+redis_down() {
+  if alive "$REDIS_PID"; then redis-cli -p "$REDIS_PORT" shutdown nosave >/dev/null 2>&1 || kill "$(cat "$REDIS_PID")"; for _ in $(seq 1 40); do alive "$REDIS_PID" || break; sleep 0.25; done; echo "redis: stopped"; else echo "redis: not running"; fi
+}
+status() {
+  alive "$MYSQL_PID" && echo "mariadb: running (pid $(cat "$MYSQL_PID"), port $DB_PORT)" || echo "mariadb: stopped"
+  alive "$REDIS_PID" && echo "redis: running (pid $(cat "$REDIS_PID"), port $REDIS_PORT)" || echo "redis: stopped"
+}
+case "${1:-}" in
+  up) mysql_up; redis_up ;;
+  down) redis_down; mysql_down ;;
+  status) status ;;
+  reset) redis_down; mysql_down; rm -rf "$MYSQL_DIR/data" "$REDIS_DIR"; echo "services: data removed" ;;
+  restart-mysql) mysql_down; mysql_up ;;
+  restart-redis) redis_down; redis_up ;;
+  *) echo "usage: bin/services up|down|status|reset|restart-mysql|restart-redis" >&2; exit 2 ;;
+esac

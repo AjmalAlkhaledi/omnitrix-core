@@ -1,0 +1,14 @@
+/vendor/
+/var/
+/composer.lock
+/.phpunit.cache/
+/.php-cs-fixer.cache
+/.env
+/.idea/
+/.vscode/
+*.log
+.DS_Store
+/benchmarks/results/
+/benchmarks/go-ref/go-ref
+/benchmarks/upstream/upstream
+/.core/
