@@ -8,7 +8,7 @@ declare(strict_types=1);
 
 require dirname(__DIR__) . '/vendor/autoload.php';
 
-$root = dirname(__DIR__) . '/src';
+$root = dirname(__DIR__) . '/src/Core';
 $classes = [];
 $it = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($root));
 foreach ($it as $file) {

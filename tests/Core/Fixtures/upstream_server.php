@@ -12,10 +12,10 @@ declare(strict_types=1);
 
 $port = (int) ($argv[1] ?? 18600);
 $tls = ($argv[2] ?? 'http') === 'https';
-$certDir = $argv[3] ?? dirname(__DIR__, 2) . '/var/tls';
+$certDir = $argv[3] ?? dirname(__DIR__, 3) . '/var/tls';
 
 $server = new OpenSwoole\Http\Server('127.0.0.1', $port, OpenSwoole\Server::POOL_MODE, $tls ? (OpenSwoole\Constant::SOCK_TCP | OpenSwoole\Constant::SSL) : OpenSwoole\Constant::SOCK_TCP);
-$settings = ['worker_num' => 1, 'log_level' => OpenSwoole\Constant::LOG_ERROR, 'log_file' => dirname(__DIR__, 2) . '/var/log/fixture-upstream.log', 'open_http2_protocol' => true, 'hook_flags' => OpenSwoole\Runtime::HOOK_ALL, 'backlog' => 1024, 'http_compression' => false];
+$settings = ['worker_num' => 1, 'log_level' => OpenSwoole\Constant::LOG_ERROR, 'log_file' => dirname(__DIR__, 3) . '/var/log/fixture-upstream.log', 'open_http2_protocol' => true, 'hook_flags' => OpenSwoole\Runtime::HOOK_ALL, 'backlog' => 1024, 'http_compression' => false];
 if ($tls) {
     $settings['ssl_cert_file'] = $certDir . '/server.crt';
     $settings['ssl_key_file'] = $certDir . '/server.key';

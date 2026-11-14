@@ -3,7 +3,14 @@
     "description": "Omnitrix Core: the coroutine runtime, I/O engine, pools and infrastructure that power the Omnitrix framework.",
     "type": "library",
     "license": "MIT",
-    "keywords": ["omnitrix", "openswoole", "coroutine", "async", "connection-pool", "runtime"],
+    "keywords": [
+        "omnitrix",
+        "openswoole",
+        "coroutine",
+        "async",
+        "connection-pool",
+        "runtime"
+    ],
     "authors": [
         {
             "name": "Ajmal Alkhaledi",
@@ -33,13 +40,19 @@
         "ext-redis": "Required by the Redis client, cache store and queue (phpredis >= 6.3)"
     },
     "autoload": {
-        "psr-4": { "Omnitrix\\Core\\": "src/" }
+        "psr-4": {
+            "Omnitrix\\Core\\": "src/Core/"
+        }
     },
     "autoload-dev": {
-        "psr-4": { "Omnitrix\\Core\\Tests\\": "tests/" }
+        "psr-4": {
+            "Omnitrix\\Core\\Tests\\": "tests/Core/"
+        }
     },
     "extra": {
-        "branch-alias": { "dev-main": "0.1.x-dev" }
+        "branch-alias": {
+            "dev-main": "0.1.x-dev"
+        }
     },
     "config": {
         "sort-packages": true,
@@ -55,6 +68,11 @@
         "test:unit": "bin/co-phpunit --testsuite unit",
         "test:integration": "bin/co-phpunit --testsuite integration",
         "test": "bin/co-phpunit --testsuite unit,integration",
-        "check": ["@composer validate --strict", "@lint", "@stan", "@test"]
+        "check": [
+            "@composer validate --strict",
+            "@lint",
+            "@stan",
+            "@test"
+        ]
     }
 }

@@ -207,7 +207,7 @@ final class RedisIntegrationTest extends TestCase
     {
         $r = $this->client();
         self::assertTrue($r->set('persist', '1'));
-        $restart = ProcessRunner::command([dirname(__DIR__, 3) . '/bin/services', 'restart-redis']);
+        $restart = ProcessRunner::command([dirname(__DIR__, 4) . '/bin/services', 'restart-redis']);
         self::assertSame(0, $restart->wait(60.0), $restart->stderr());
         $recovered = null;
         for ($i = 0; $i < 20 && $recovered === null; $i++) {

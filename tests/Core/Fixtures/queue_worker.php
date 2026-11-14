@@ -19,7 +19,7 @@ use Omnitrix\Core\Runtime\Shutdown\SignalHandler;
 use OpenSwoole\Coroutine;
 use OpenSwoole\Runtime;
 
-require dirname(__DIR__, 2) . '/vendor/autoload.php';
+require dirname(__DIR__, 3) . '/vendor/autoload.php';
 
 $env = static function (string $name, string $default): string {
     $value = getenv($name);
@@ -27,7 +27,7 @@ $env = static function (string $name, string $default): string {
     return is_string($value) && $value !== '' ? $value : $default;
 };
 
-Coroutine::set(['log_file' => dirname(__DIR__, 2) . '/var/log/fixture-queue.log']);
+Coroutine::set(['log_file' => dirname(__DIR__, 3) . '/var/log/fixture-queue.log']);
 Runtime::enableCoroutine(true, Runtime::HOOK_ALL);
 
 Coroutine::run(static function () use ($env): void {

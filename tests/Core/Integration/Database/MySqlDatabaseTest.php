@@ -376,7 +376,7 @@ final class MySqlDatabaseTest extends TestCase
     {
         $db = self::db();
         self::assertSame([['ok' => 1]], $db->select('select 1 as ok'));
-        $restart = ProcessRunner::command([dirname(__DIR__, 3) . '/bin/services', 'restart-mysql']);
+        $restart = ProcessRunner::command([dirname(__DIR__, 4) . '/bin/services', 'restart-mysql']);
         $code = $restart->wait(120.0);
         self::assertSame(0, $code, 'restart-mysql failed: ' . $restart->stderr());
 

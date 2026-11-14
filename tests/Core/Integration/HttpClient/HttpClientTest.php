@@ -46,14 +46,14 @@ final class HttpClientTest extends TestCase
 
     public static function setUpBeforeClass(): void
     {
-        $root = dirname(__DIR__, 3);
+        $root = dirname(__DIR__, 4);
         self::$certDir = $root . '/var/tls';
-        $certs = ProcessRunner::command([$root . '/tests/Fixtures/tls/make-certs.sh', self::$certDir]);
+        $certs = ProcessRunner::command([$root . '/tests/Core/Fixtures/tls/make-certs.sh', self::$certDir]);
         if ($certs->wait(60.0) !== 0) {
             self::fail('certificate generation failed: ' . $certs->stderr());
         }
-        self::$http = new ProcessRunner($root . '/tests/Fixtures/upstream_server.php', [(string) self::HTTP_PORT, 'http']);
-        self::$https = new ProcessRunner($root . '/tests/Fixtures/upstream_server.php', [(string) self::HTTPS_PORT, 'https', self::$certDir]);
+        self::$http = new ProcessRunner($root . '/tests/Core/Fixtures/upstream_server.php', [(string) self::HTTP_PORT, 'http']);
+        self::$https = new ProcessRunner($root . '/tests/Core/Fixtures/upstream_server.php', [(string) self::HTTPS_PORT, 'https', self::$certDir]);
         self::$http->waitForPort('127.0.0.1', self::HTTP_PORT, 15.0);
         self::$https->waitForPort('127.0.0.1', self::HTTPS_PORT, 15.0);
     }

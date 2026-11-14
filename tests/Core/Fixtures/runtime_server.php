@@ -19,7 +19,7 @@ use OpenSwoole\Coroutine;
 use OpenSwoole\Http\Request;
 use OpenSwoole\Http\Response;
 
-require dirname(__DIR__, 2) . '/vendor/autoload.php';
+require dirname(__DIR__, 3) . '/vendor/autoload.php';
 
 $env = static function (string $name, string $default): string {
     $value = getenv($name);
@@ -40,7 +40,7 @@ $app = ServerRuntime::create([
         'workers' => (int) $env('OMNITRIX_FIXTURE_WORKERS', '2'),
         'max_wait_time' => 5,
         'log_level' => 'error',
-        'log_file' => dirname(__DIR__, 2) . '/var/log/fixture-runtime.log',
+        'log_file' => dirname(__DIR__, 3) . '/var/log/fixture-runtime.log',
         'backlog' => 1024,
     ],
 ]);
