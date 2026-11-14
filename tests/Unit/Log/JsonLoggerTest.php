@@ -8,6 +8,7 @@ use Omnitrix\Core\Log\JsonLogger;
 use Omnitrix\Core\Tests\Support\TestCase;
 use PHPUnit\Framework\Attributes\CoversClass;
 use Psr\Log\InvalidArgumentException;
+use Psr\Log\LogLevel;
 use RuntimeException;
 use stdClass;
 
@@ -72,5 +73,24 @@ final class JsonLoggerTest extends TestCase
         [$logger] = $this->logger();
         $this->expectException(InvalidArgumentException::class);
         $logger->log('loud', 'x');
+    }
+
+    public function testRecordsBelowTheMinimumLevelAreDiscarded(): void
+    {
+        $stream = fopen('php://memory', 'w+b');
+        self::assertIsResource($stream);
+        $logger = new JsonLogger($stream, minimumLevel: LogLevel::INFO);
+        $logger->debug('hidden');
+        $logger->info('shown');
+        $logger->error('also shown');
+        rewind($stream);
+        $output = (string) stream_get_contents($stream);
+
+        self::assertStringNotContainsString('hidden', $output);
+        self::assertStringContainsString('"message":"shown"', $output);
+        self::assertStringContainsString('"message":"also shown"', $output);
+
+        $this->expectException(InvalidArgumentException::class);
+        new JsonLogger($stream, minimumLevel: 'verbose');
     }
 }

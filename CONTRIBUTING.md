@@ -13,7 +13,7 @@ make check
 bin/services down
 ```
 
-See [docs/testing.md](docs/testing.md) for the suites and conventions.
+See the contributing guide in the documentation site for the suites and conventions.
 
 | Target | |
 |---|---|
@@ -24,11 +24,12 @@ See [docs/testing.md](docs/testing.md) for the suites and conventions.
 ## Guidelines
 
 - Core contains engine code only: no routing, middleware or application conventions, and no
-  dependency on `omnitrix/omnitrix`.
+  dependency on `omnitrix/framework`.
 - Changes to documented public types follow Semantic Versioning. Mark plumbing that must be
   `public` but is not meant for consumers with `@internal`.
-- Behaviour that depends on OpenSwoole or extension quirks gets a test and an entry in
-  [docs/platform-notes.md](docs/platform-notes.md).
-- Significant design decisions are recorded as ADRs in `docs/adr/`.
-- Update `CHANGELOG.md` and regenerate the API reference with `php tools/api_reference.php`.
+- Behaviour that depends on OpenSwoole or extension quirks gets a test and an entry in the
+  platform notes of the documentation site.
+- Significant design decisions are recorded as decision records in the documentation site.
+- Update `CHANGELOG.md`. The API reference page is generated with `php tools/api_reference.php`
+  (run `npm run api` in the docs project).
 - Commit messages: imperative mood, a short summary line, details in the body when useful.

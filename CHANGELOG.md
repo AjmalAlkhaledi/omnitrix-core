@@ -4,6 +4,17 @@ All notable changes to this project are documented in this file. The format foll
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- `JsonLogger` accepts a minimum level (`minimumLevel`); less severe records are discarded.
+
+### Fixed
+
+- An empty Redis username or password (for example `REDIS_PASSWORD=` in an environment file) is
+  treated as "no credentials" instead of sending `AUTH` with an empty password.
+
 ## [0.1.0] - 2026-11-13
 
 ### Added

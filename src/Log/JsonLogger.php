@@ -11,10 +11,11 @@ use Psr\Log\LogLevel;
 use Stringable;
 use Throwable;
 
+use function array_search;
 use function fwrite;
 use function get_debug_type;
-use function in_array;
 use function is_array;
+use function is_int;
 use function is_resource;
 use function is_scalar;
 use function json_encode;
@@ -32,7 +33,8 @@ use const STDERR;
  *
  * Redaction: context keys listed in `$redactKeys` (case-insensitive) are replaced by "[redacted]"
  * so credentials never reach the log. Throwables in context are serialised as class/message/
- * file/line without their trace unless `$includeTraces` is enabled.
+ * file/line without their trace unless `$includeTraces` is enabled. Records below
+ * `$minimumLevel` (default: debug, i.e. everything) are discarded.
  */
 final class JsonLogger extends AbstractLogger
 {
@@ -47,12 +49,20 @@ final class JsonLogger extends AbstractLogger
     /** @var array<string, true> */
     private array $redact = [];
 
+    private readonly int $threshold;
+
     /**
-     * @param resource|null $stream defaults to STDERR
+     * @param resource|null $stream       defaults to STDERR
      * @param list<string>  $redactKeys
+     * @param string        $minimumLevel a PSR-3 level; less severe records are discarded
      */
-    public function __construct($stream = null, array $redactKeys = ['password', 'secret', 'token', 'authorization', 'api_key', 'apikey'], private readonly bool $includeTraces = false, private readonly string $channel = 'omnitrix')
+    public function __construct($stream = null, array $redactKeys = ['password', 'secret', 'token', 'authorization', 'api_key', 'apikey'], private readonly bool $includeTraces = false, private readonly string $channel = 'omnitrix', string $minimumLevel = LogLevel::DEBUG)
     {
+        $threshold = array_search($minimumLevel, self::LEVELS, true);
+        if (!is_int($threshold)) {
+            throw new InvalidArgumentException("Unknown log level '{$minimumLevel}'");
+        }
+        $this->threshold = $threshold;
         $this->stream = is_resource($stream) ? $stream : STDERR;
         foreach ($redactKeys as $key) {
             $this->redact[strtolower($key)] = true;
@@ -65,8 +75,12 @@ final class JsonLogger extends AbstractLogger
      */
     public function log($level, string|Stringable $message, array $context = []): void
     {
-        if (!in_array($level, self::LEVELS, true)) {
+        $severity = array_search($level, self::LEVELS, true);
+        if (!is_int($severity)) {
             throw new InvalidArgumentException('Unknown log level ' . get_debug_type($level));
+        }
+        if ($severity > $this->threshold) {
+            return;
         }
 
         $record = [

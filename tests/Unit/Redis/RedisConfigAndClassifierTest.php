@@ -24,6 +24,9 @@ final class RedisConfigAndClassifierTest extends TestCase
         self::assertSame(['127.0.0.1', 6379, 0, 2.0, 5.0, '', 16], [$c->host, $c->port, $c->database, $c->timeout, $c->readTimeout, $c->prefix, $c->poolMax]);
         $c = RedisConfig::fromArray(['host' => 'cache', 'port' => 63790, 'password' => 'p', 'database' => 2, 'read_timeout' => 1, 'prefix' => 'app:', 'pool' => ['max' => 4, 'acquire_timeout' => 0.5]]);
         self::assertSame(['cache', 63790, 'p', 2, 1.0, 'app:', 4, 0.5], [$c->host, $c->port, $c->password, $c->database, $c->readTimeout, $c->prefix, $c->poolMax, $c->poolAcquireTimeout]);
+        $empty = RedisConfig::fromArray(['username' => '', 'password' => '']);
+        self::assertNull($empty->username, 'an empty username from the environment means none');
+        self::assertNull($empty->password, 'an empty password from the environment means none');
         foreach ([['hostname' => 'x'], ['port' => 0], ['database' => -1], ['pool' => ['min' => 1]], ['password' => 5], ['host' => '']] as $bad) {
             try {
                 RedisConfig::fromArray($bad);

@@ -1,12 +1,13 @@
 # Omnitrix Core
 
-Omnitrix Core is the runtime engine of the Omnitrix PHP framework (`omnitrix/omnitrix`). It
+Omnitrix Core is the runtime engine of the Omnitrix PHP framework (`omnitrix/framework`). It
 runs on [OpenSwoole](https://openswoole.com/) and provides the server lifecycle, worker and
 request scopes, the HTTP transport, structured concurrency, bounded connection pools, and
 coroutine-aware database, HTTP client, Redis, queue, CPU-pool and I/O components.
 
-> **Building an application?** Install the framework instead: `composer require omnitrix/omnitrix`.
-> It depends on this package and exposes its capabilities through a stable public API.
+> **Building an application?** Create one from the skeleton instead:
+> `composer create-project omnitrix/omnitrix my-api`. Applications depend on the framework
+> (`omnitrix/framework`), which uses this package and exposes it through a stable public API.
 > Omnitrix Core is an internal dependency and does not provide application conventions such as
 > routing or middleware.
 
@@ -40,11 +41,8 @@ composer require omnitrix/core
 
 ## Documentation
 
-- [Architecture](docs/architecture.md)
-- [Platform notes](docs/platform-notes.md) — runtime behaviour Core accounts for
-- [Architecture decision records](docs/adr/)
-- [Testing](docs/testing.md)
-- [API reference](docs/api-reference.md)
+Architecture, platform notes, design decisions and the API reference of this package are part of
+the Omnitrix documentation site project (Architecture → Omnitrix Core).
 
 ## Versioning
 

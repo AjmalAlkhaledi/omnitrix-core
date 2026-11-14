@@ -66,6 +66,9 @@ final readonly class RedisConfig
         if (($username !== null && !is_string($username)) || ($password !== null && !is_string($password))) {
             throw InvalidConfigurationException::at('redis.password', 'expected string or null');
         }
+        // An empty value (e.g. `REDIS_PASSWORD=` in an environment file) means "no credentials".
+        $username = $username === '' ? null : $username;
+        $password = $password === '' ? null : $password;
 
         return new self(
             host: self::string($config, 'host', '127.0.0.1'),
