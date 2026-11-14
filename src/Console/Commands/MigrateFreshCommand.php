@@ -24,9 +24,11 @@ final class MigrateFreshCommand extends MigrationCommand
         if (!$this->allowed($input, $output)) {
             return self::FAILURE;
         }
-        $output->writeln('Dropped all tables.');
-        $this->withMigrator($output, static fn(Migrator $m): array => $m->fresh());
-        $output->writeln('<info>Migrations complete.</info>');
+        $ran = $this->withMigratorCreatingDatabase($input, $output, static fn(Migrator $m): array => $m->fresh());
+        if ($ran === null) {
+            return self::FAILURE;
+        }
+        $output->writeln('<info>Dropped all tables and ran the migrations.</info>');
         if ($input->getOption('seed') === true) {
             $this->seed($output, self::DEFAULT_SEEDER);
         }

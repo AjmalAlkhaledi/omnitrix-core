@@ -4,6 +4,14 @@ All notable changes to this project are documented in this file. The format foll
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.1.1] - 2026-11-14
+
+### Added
+
+- `php omnitrix migrate` and `migrate:fresh` offer to create the configured database when it
+  does not exist (MySQL error 1049) and continue with the migrations; declining exits without
+  changes. With `--no-interaction` the database is created.
+
 ## [0.1.0] - 2026-11-14
 
 First public release. The package contains the framework (`Omnitrix\`) and its runtime engine

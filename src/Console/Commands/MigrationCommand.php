@@ -6,12 +6,16 @@ namespace Omnitrix\Console\Commands;
 
 use LogicException;
 use Omnitrix\Console\Command;
+use Omnitrix\Database\DatabaseCreator;
 use Omnitrix\Database\Migrations\Migrator;
 use Omnitrix\Database\Seeding\Seeder;
 use Omnitrix\Facades\DB;
+use Symfony\Component\Console\Helper\QuestionHelper;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Input\InputOption;
 use Symfony\Component\Console\Output\OutputInterface;
+use Symfony\Component\Console\Question\ConfirmationQuestion;
+use Throwable;
 
 use function class_exists;
 use function is_array;
@@ -46,6 +50,42 @@ abstract class MigrationCommand extends Command
 
             return $body($migrator);
         });
+    }
+
+    /**
+     * Like {@see withMigrator()}, but when the configured database does not exist yet, asks
+     * whether to create it (the default answer, also used with --no-interaction, is yes), creates
+     * it and runs `$body` again. Declining exits without changes.
+     *
+     * @template T
+     *
+     * @param callable(Migrator): T $body
+     *
+     * @return T|null null when the developer declined to create the database
+     */
+    protected function withMigratorCreatingDatabase(InputInterface $input, OutputInterface $output, callable $body): mixed
+    {
+        try {
+            return $this->withMigrator($output, $body);
+        } catch (Throwable $e) {
+            if (!DatabaseCreator::isUnknownDatabase($e)) {
+                throw $e;
+            }
+        }
+        $section = $this->app()->config()['database'] ?? [];
+        /** @var array<string, mixed> $section */
+        $creator = new DatabaseCreator(is_array($section) ? $section : []);
+        $output->writeln("<comment>The database '{$creator->name()}' does not exist.</comment>");
+        $helper = new QuestionHelper();
+        if ($helper->ask($input, $output, new ConfirmationQuestion('Would you like to create it? (yes/no) [yes] ', true)) !== true) {
+            $output->writeln('Nothing was changed.');
+
+            return null;
+        }
+        $creator->create();
+        $output->writeln("<info>Created database '{$creator->name()}'.</info>");
+
+        return $this->withMigrator($output, $body);
     }
 
     /** Runs a seeder class (inside the application's services). */

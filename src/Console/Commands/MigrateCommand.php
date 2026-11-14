@@ -20,7 +20,10 @@ final class MigrateCommand extends MigrationCommand
 
     protected function execute(InputInterface $input, OutputInterface $output): int
     {
-        $ran = $this->withMigrator($output, static fn(Migrator $m): array => $m->migrate());
+        $ran = $this->withMigratorCreatingDatabase($input, $output, static fn(Migrator $m): array => $m->migrate());
+        if ($ran === null) {
+            return self::FAILURE;
+        }
         $output->writeln($ran === [] ? 'Nothing to migrate.' : '<info>Migrations complete.</info>');
         if ($input->getOption('seed') === true) {
             $this->seed($output, self::DEFAULT_SEEDER);
