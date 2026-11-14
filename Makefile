@@ -1,6 +1,6 @@
 PHP ?= php
 COMPOSER ?= composer
-PHPUNIT := $(PHP) bin/co-phpunit
+PHPUNIT := $(PHP) bin/omnitrix-phpunit
 
 .PHONY: help install validate lint lint-fix stan test-unit test-integration test check services-up services-down services-status
 

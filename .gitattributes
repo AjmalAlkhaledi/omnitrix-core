@@ -11,4 +11,4 @@
 /phpunit.xml.dist   export-ignore
 /Makefile           export-ignore
 /bin/services       export-ignore
-/bin/co-phpunit     export-ignore
+/benchmarks           export-ignore

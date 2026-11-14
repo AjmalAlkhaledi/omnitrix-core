@@ -19,6 +19,13 @@
 /phpstan.neon
 /.php-cs-fixer.php
 
+# Benchmark binaries and results
+/benchmarks/results/
+/benchmarks/go-ref/go-ref
+/benchmarks/upstream/upstream
+__pycache__/
+*.py[cod]
+
 # Tool caches and reports
 /.phpunit.cache/
 /.phpunit.result.cache

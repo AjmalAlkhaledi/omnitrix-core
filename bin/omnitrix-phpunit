@@ -27,7 +27,7 @@ foreach ([__DIR__ . '/../vendor/autoload.php', __DIR__ . '/../../../autoload.php
 }
 
 if (!extension_loaded('openswoole')) {
-    fwrite(STDERR, "co-phpunit: the openswoole extension is required\n");
+    fwrite(STDERR, "omnitrix-phpunit: the openswoole extension is required\n");
     exit(1);
 }
 
@@ -60,7 +60,7 @@ Coroutine::run(static function () use (&$exitCode, &$failure): void {
 });
 
 if ($failure !== null) {
-    fwrite(STDERR, 'co-phpunit: uncaught ' . $failure::class . ': ' . $failure->getMessage() . "\n" . $failure->getTraceAsString() . "\n");
+    fwrite(STDERR, 'omnitrix-phpunit: uncaught ' . $failure::class . ': ' . $failure->getMessage() . "\n" . $failure->getTraceAsString() . "\n");
 }
 
 exit($exitCode);

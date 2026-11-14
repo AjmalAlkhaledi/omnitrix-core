@@ -1,53 +1,57 @@
 # Omnitrix Core
 
-Omnitrix Core is the runtime engine of the Omnitrix PHP framework (`omnitrix/framework`). It
-runs on [OpenSwoole](https://openswoole.com/) and provides the server lifecycle, worker and
-request scopes, the HTTP transport, structured concurrency, bounded connection pools, and
-coroutine-aware database, HTTP client, Redis, queue, CPU-pool and I/O components.
+The Omnitrix framework and its runtime engine: asynchronous PHP APIs on
+[OpenSwoole](https://openswoole.com/). Every request runs in its own coroutine; database queries,
+Redis commands, outbound HTTP calls and file I/O suspend only the request that waits, so a few
+long-lived worker processes serve many concurrent requests.
 
-> **Building an application?** Create one from the skeleton instead:
-> `composer create-project omnitrix/omnitrix my-api`. Applications depend on the framework
-> (`omnitrix/framework`), which uses this package and exposes it through a stable public API.
-> Omnitrix Core is an internal dependency and does not provide application conventions such as
-> routing or middleware.
+> **Building an application?** Create one from the application template; it requires this
+> package:
+>
+> ```sh
+> composer create-project omnitrix/omnitrix my-api
+> ```
+
+```php
+// routes/api.php in an Omnitrix application
+$router->get('/users/{id:\d+}', function (Request $request): array {
+    $user = User::with('posts')->findOrFail($request->routeInt('id'));
+
+    return Async::all([
+        'user' => fn () => $user,
+        'followers' => fn () => DB::table('follows')->where('user_id', $user->id)->count(),
+        'score' => fn () => Http::timeout(2)->get("https://scores.example.com/users/{$user->id}")->json(),
+    ], timeout: 3.0);
+});
+```
 
 ## Requirements
 
-- PHP 8.3+ (NTS) on Linux
-- ext-openswoole 26.2+ (built with OpenSSL and HTTP/2 support)
-- ext-json, ext-mbstring, ext-pdo
-- ext-pdo_mysql on mysqlnd and ext-redis 6.3+ for the database, Redis, cache and queue components
+PHP 8.3+, ext-openswoole 26.2+, ext-redis (phpredis) 6.3+ and ext-pdo_mysql on Linux.
+Installing PHP and these extensions is up to you; Composer refuses to install the package when
+they are missing.
 
-## Installation
-
-```sh
-composer require omnitrix/core
-```
-
-## Components
+## What is inside
 
 | Namespace | Provides |
 |---|---|
-| `Omnitrix\Core\Runtime` | `ServerRuntime`, worker lifecycle, `RequestContext`, scheduling, shutdown and signal handling |
-| `Omnitrix\Core\Http` | HTTP status helpers, `HttpErrorInterface`, server transport (`IncomingRequest`, `ResponseWriter`) |
-| `Omnitrix\Core\Concurrency` | `Async`, `TaskScope`, `Task`, `CancellationToken`, `Semaphore` |
-| `Omnitrix\Core\Database` | PDO/mysqlnd driver, connection pool, query builder, transactions, typed errors |
-| `Omnitrix\Core\HttpClient` | pooled HTTP/1.1 and HTTP/2 client with TLS verification, redirects and retries |
-| `Omnitrix\Core\Redis`, `Cache` | pooled phpredis client, JSON cache |
-| `Omnitrix\Core\Queue` | reliable Redis queue, producer and consumer |
-| `Omnitrix\Core\Process` | supervised CPU worker pool |
-| `Omnitrix\Core\IO` | coroutine TCP/UDP sockets, DNS, filesystem helpers |
-| `Omnitrix\Core\Observability`, `Log`, `Container` | shared-memory metrics, JSON PSR-3 logger, PSR-11 container |
+| `Omnitrix\` | the framework: `Application`, routing, middleware, requests and responses, validation, security, rate limiting, observability, facades, models and migrations, the `php omnitrix` console, queue workers |
+| `Omnitrix\Core\` | the engine: server runtime and worker lifecycle, request context, HTTP transport, structured concurrency, connection pools, MySQL/MariaDB driver and query builder, HTTP client, Redis, cache, queue storage, CPU process pool, coroutine I/O |
+
+Applications use the `Omnitrix\` API and the documented `Omnitrix\Core\` types it returns.
+Classes and methods marked `@internal` are implementation details and may change in any release.
 
 ## Documentation
 
-Architecture, platform notes, design decisions and the API reference of this package are part of
-the Omnitrix documentation site project (Architecture → Omnitrix Core).
+https://ajmalalkhaledi.github.io/omnitrix-docs/
 
-## Versioning
+## Related repositories
 
-Core follows Semantic Versioning for the types documented as public. Classes and methods
-marked `@internal` may change in any release.
+| Package | Role |
+|---|---|
+| `omnitrix/omnitrix` | the application template (`composer create-project omnitrix/omnitrix my-api`) |
+| `omnitrix/core` | this package |
+| `omnitrix/installer` | the `omnitrix new` command |
 
 ## Contributing and security
 
@@ -55,4 +59,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).
 
 ## License
 
-Omnitrix Core is open-source software licensed under the [MIT license](LICENSE).
+Omnitrix is open-source software licensed under the [MIT license](LICENSE).

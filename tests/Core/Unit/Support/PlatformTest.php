@@ -51,6 +51,6 @@ final class PlatformTest extends TestCase
 
     public function testDetectsExecutionInsideACoroutine(): void
     {
-        self::assertTrue(Platform::inCoroutine(), 'co-phpunit must run tests inside a root coroutine');
+        self::assertTrue(Platform::inCoroutine(), 'omnitrix-phpunit must run tests inside a root coroutine');
     }
 }

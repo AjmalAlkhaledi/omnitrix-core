@@ -8,14 +8,14 @@ declare(strict_types=1);
 
 require dirname(__DIR__) . '/vendor/autoload.php';
 
-$root = dirname(__DIR__) . '/src/Core';
+$root = dirname(__DIR__) . '/src';
 $classes = [];
 $it = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($root));
 foreach ($it as $file) {
     if ($file->getExtension() !== 'php') {
         continue;
     }
-    $class = 'Omnitrix\\Core\\' . str_replace(['/', '.php'], ['\\', ''], substr($file->getPathname(), strlen($root) + 1));
+    $class = 'Omnitrix\\' . str_replace(['/', '.php'], ['\\', ''], substr($file->getPathname(), strlen($root) + 1));
     if (class_exists($class) || interface_exists($class) || enum_exists($class)) {
         $classes[] = $class;
     }
@@ -38,7 +38,7 @@ $summary = static function (string|false $doc): string {
 $isInternal = static fn(string|false $doc): bool => $doc !== false && preg_match('/@internal\b/', $doc) === 1;
 $type = static fn(?ReflectionType $t): string => $t === null ? 'mixed' : (string) $t;
 
-$out = "---\ntitle: Core API (omnitrix/core)\n---\n\n# Core API (omnitrix/core)\n\nPublic classes and methods, generated from the source. Classes and methods marked `@internal` are implementation details and are not listed.\n";
+$out = "---\ntitle: API reference\n---\n\n# API reference (omnitrix/core)\n\nPublic classes and methods, generated from the source. Classes and methods marked `@internal` are implementation details and are not listed.\n";
 $currentNs = '';
 foreach ($classes as $class) {
     $r = new ReflectionClass($class);

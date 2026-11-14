@@ -19,7 +19,7 @@ use function usleep;
 /**
  * Base test case for every Omnitrix test.
  *
- * Tests run inside the root coroutine created by bin/co-phpunit. This class adds:
+ * Tests run inside the root coroutine created by bin/omnitrix-phpunit. This class adds:
  *  - a leak check: coroutines spawned by a test must have finished when the test ends;
  *  - helpers to run closures concurrently, collect results and measure elapsed time,
  *    rethrowing the first exception raised inside a child coroutine.

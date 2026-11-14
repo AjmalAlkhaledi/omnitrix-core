@@ -6,7 +6,7 @@ $finder = PhpCsFixer\Finder::create()
     ->in(array_filter([__DIR__ . '/src', __DIR__ . '/tests', __DIR__ . '/benchmarks', __DIR__ . '/bin'], 'is_dir'))
     ->exclude(['vendor'])
     ->name('*.php')
-    ->name('co-phpunit');
+    ->name('omnitrix-phpunit');
 
 return (new PhpCsFixer\Config())
     ->setRiskyAllowed(true)
