@@ -2,8 +2,9 @@
 
 declare(strict_types=1);
 
-/* Generates docs/api-reference.md from public classes and methods (signatures + first doc line).
-   Classes and methods marked @internal are left out. */
+/* Prints a Markdown API reference (public classes and methods: signatures and first doc line)
+   to stdout. Classes and methods marked @internal are left out. Used by the documentation site:
+   php tools/api_reference.php > ../docs/docs/reference/<page>.md */
 
 require dirname(__DIR__) . '/vendor/autoload.php';
 
@@ -37,7 +38,7 @@ $summary = static function (string|false $doc): string {
 $isInternal = static fn(string|false $doc): bool => $doc !== false && preg_match('/@internal\b/', $doc) === 1;
 $type = static fn(?ReflectionType $t): string => $t === null ? 'mixed' : (string) $t;
 
-$out = "# API Reference\n\nPublic classes and methods, generated from the source with `php tools/api_reference.php`. Narrative documentation lives in the other files of `docs/`.\n";
+$out = "---\ntitle: Core API (omnitrix/core)\n---\n\n# Core API (omnitrix/core)\n\nPublic classes and methods, generated from the source. Classes and methods marked `@internal` are implementation details and are not listed.\n";
 $currentNs = '';
 foreach ($classes as $class) {
     $r = new ReflectionClass($class);
@@ -69,5 +70,4 @@ foreach ($classes as $class) {
         $out .= $line . ($d !== '' ? " — {$d}" : '') . "\n";
     }
 }
-file_put_contents(dirname(__DIR__) . '/docs/api-reference.md', $out);
-echo count($classes), " classes documented\n";
+echo $out;
