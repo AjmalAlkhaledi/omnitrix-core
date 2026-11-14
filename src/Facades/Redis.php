@@ -8,7 +8,7 @@ use Omnitrix\Core\Redis\RedisClient;
 use Redis as PhpRedis;
 
 /**
- * Redis access (see docs/redis.md). Typed helpers for common commands; `command()` for the
+ * Redis access (documentation: Async & services → Redis and cache). Typed helpers for common commands; `command()` for the
  * rest; `withConnection()` for anything on the raw phpredis handle.
  */
 final class Redis extends Facade

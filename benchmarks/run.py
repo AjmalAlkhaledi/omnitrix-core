@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Omnitrix vs Go benchmark harness (see docs/benchmarks/methodology.md).
+"""Omnitrix vs Go benchmark harness (see benchmarks/README.md).
 
 Usage: benchmarks/run.py [--duration 20] [--warmup 8] [--reps 3] [--only php|go] [--bench a|b]
                          [--levels 16,64,256] [--configs single,multi] [--out benchmarks/results/run.jsonl]

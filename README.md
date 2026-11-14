@@ -1,90 +1,76 @@
-# Omnitrix
+# Omnitrix Framework
 
-Omnitrix is an asynchronous PHP framework for building HTTP APIs on
-[OpenSwoole](https://openswoole.com/). Every request runs in its own coroutine; database
-queries, Redis commands, outbound HTTP calls and file I/O suspend only the request that waits,
-so a small number of long-lived worker processes serves many concurrent requests.
+The framework behind Omnitrix applications: asynchronous PHP APIs on
+[OpenSwoole](https://openswoole.com/). Every request runs in its own coroutine; database queries,
+Redis commands, outbound HTTP calls and file I/O suspend only the request that waits, so a few
+long-lived worker processes serve many concurrent requests.
 
 ```php
-<?php
-
-use Omnitrix\Application;
-use Omnitrix\Facades\Async;
-use Omnitrix\Facades\DB;
-use Omnitrix\Facades\Http;
-use Omnitrix\Http\Request;
-
-require __DIR__ . '/vendor/autoload.php';
-
-$app = Application::create([
-    'server' => ['port' => 8080, 'workers' => 4],
-    'database' => ['host' => '127.0.0.1', 'database' => 'app', 'username' => 'app', 'password' => getenv('DB_PASSWORD') ?: ''],
-]);
-
-$app->get('/users/{id:\d+}', function (Request $request): array {
-    $id = $request->routeInt('id');
+// routes/api.php in an Omnitrix application
+$router->get('/users/{id:\d+}', function (Request $request): array {
+    $user = User::with('posts')->findOrFail($request->routeInt('id'));
 
     return Async::all([
-        'user' => fn () => DB::table('users')->where('id', $id)->first(),
-        'orders' => fn () => DB::table('orders')->where('user_id', $id)->count(),
-        'score' => fn () => Http::timeout(2)->get("https://scores.example.com/users/{$id}")->json(),
+        'user' => fn () => $user,
+        'followers' => fn () => DB::table('follows')->where('user_id', $user->id)->count(),
+        'score' => fn () => Http::timeout(2)->get("https://scores.example.com/users/{$user->id}")->json(),
     ], timeout: 3.0);
 });
-
-$app->run();
 ```
 
-## Features
+## Getting started
 
-- **HTTP**: FastRoute-based routing with groups and named routes, middleware pipeline, JSON
-  requests and responses, streaming, cookies, request ids, body limits, request timeouts and
-  safe JSON error responses.
-- **Concurrency**: structured fan-out (`Async::all`, `allSettled`, `race`, `withTimeout`,
-  `scope`) with cancellation and bounded parallelism.
-- **Data access**: pooled MySQL/MariaDB connections with a query builder and transactions;
-  pooled Redis client and JSON cache; outbound HTTP client with pooling, retries, redirects
-  and TLS verification.
-- **Background work**: Redis-backed job queue with retries, delays and dead letters; a CPU
-  process pool for computation that must not block request workers.
-- **Production**: validation, bearer-token authentication, authorization, rate limiting,
-  security headers, access logs, Prometheus metrics, health and readiness endpoints, graceful
-  shutdown and reload.
+Create an application from the skeleton; it depends on this package:
+
+```sh
+composer create-project omnitrix/omnitrix my-api
+# or, with the installer:
+composer global require omnitrix/installer
+omnitrix new my-api
+```
+
+```sh
+cd my-api
+php omnitrix migrate
+php omnitrix serve
+```
 
 ## Requirements
 
-PHP 8.3+, ext-openswoole 26.2+, Linux. ext-pdo_mysql (mysqlnd) and ext-redis are needed only
-for the database and Redis features. See [docs/installation.md](docs/installation.md).
+PHP 8.3+, ext-openswoole 26.2+, ext-redis (phpredis) 6.3+ and ext-pdo_mysql on Linux.
+Installing PHP and these extensions is up to you; Composer refuses to install the framework
+when they are missing.
 
-## Installation
+## Features
 
-```sh
-composer require omnitrix/omnitrix
-```
-
-Then follow [docs/getting-started.md](docs/getting-started.md).
+- **HTTP**: routing with groups and named routes, middleware, validation, JSON errors with
+  request ids, streaming, cookies, body limits and request timeouts.
+- **Console**: `php omnitrix serve`, `migrate`, `db:seed`, `queue:work`, `routes`, `about`, and
+  generators for controllers, models, migrations, middleware, jobs and seeders.
+- **Database**: pooled MySQL/MariaDB connections, query builder, schema migrations, models with
+  `hasOne`, `hasMany`, `belongsTo` and `belongsToMany` relationships, eager loading, pagination.
+- **Concurrency**: `Async::all`, `allSettled`, `race`, `withTimeout` and scopes with
+  cancellation; coroutine HTTP client, Redis, cache and queue; a CPU process pool.
+- **Production**: authentication, authorization, rate limiting, security headers, access logs,
+  Prometheus metrics, health checks, graceful shutdown and reloads.
 
 ## Documentation
 
-| Topic | |
-|---|---|
-| Basics | [Installation](docs/installation.md) · [Getting started](docs/getting-started.md) · [Configuration](docs/configuration.md) |
-| HTTP | [Routing](docs/routing.md) · [Middleware](docs/middleware.md) · [Requests and responses](docs/requests-responses.md) |
-| Data | [Database](docs/database.md) · [Redis and cache](docs/redis.md) · [HTTP client](docs/http-client.md) |
-| Concurrency | [Concurrency](docs/concurrency.md) · [Background jobs](docs/background-jobs.md) · [CPU pool](docs/process-pool.md) · [Sockets and files](docs/filesystem.md) |
-| Operations | [Runtime](docs/runtime.md) · [Deployment](docs/deployment.md) · [Troubleshooting](docs/troubleshooting.md) · [Testing](docs/testing.md) |
-| Reference | [Architecture](docs/architecture.md) · [API reference](docs/api-reference.md) · [Benchmarks](benchmarks/README.md) |
+The documentation (installation, guides, architecture and the API reference) is published from
+the Omnitrix documentation site project.
 
 ## Packages
 
-Omnitrix is built on Omnitrix Core
-(`omnitrix/core`), the runtime engine that provides the server lifecycle, connection pools,
-drivers and concurrency primitives. Applications only depend on `omnitrix/omnitrix`; see
-[docs/architecture.md](docs/architecture.md) for the boundary between the two packages.
+| Package | Role |
+|---|---|
+| `omnitrix/omnitrix` | application skeleton |
+| `omnitrix/framework` | this package |
+| `omnitrix/core` | runtime engine used by the framework; applications never require it directly |
+| `omnitrix/installer` | the `omnitrix new` command |
 
 ## Contributing and security
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the development setup and [SECURITY.md](SECURITY.md)
-for reporting vulnerabilities.
+See [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).
 
 ## License
 

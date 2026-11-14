@@ -7,7 +7,7 @@ namespace Omnitrix\Facades;
 use Omnitrix\Core\Process\CpuPool;
 
 /**
- * CPU worker pool (see docs/process-pool.md).
+ * CPU worker pool (documentation: Async & services → CPU pool).
  *
  * ```php
  * $report = Cpu::run('render-report', ['month' => '2026-10'], timeout: 20);

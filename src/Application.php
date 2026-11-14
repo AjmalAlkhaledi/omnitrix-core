@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Omnitrix;
 
+use InvalidArgumentException;
 use LogicException;
 use Omnitrix\Core\Cache\Cache as CacheService;
 use Omnitrix\Core\Container\Container;
@@ -12,6 +13,7 @@ use Omnitrix\Core\Http\Server\HttpServerAdapter;
 use Omnitrix\Core\Http\Server\HttpServerConfig;
 use Omnitrix\Core\HttpClient\HttpClient;
 use Omnitrix\Core\HttpClient\HttpClientConfig;
+use Omnitrix\Core\Log\JsonLogger;
 use Omnitrix\Core\Observability\MetricsRegistry;
 use Omnitrix\Core\Process\CpuLoadBoard;
 use Omnitrix\Core\Process\CpuPool;
@@ -24,6 +26,7 @@ use Omnitrix\Core\Redis\RedisConfig;
 use Omnitrix\Core\Runtime\Config\InvalidConfigurationException;
 use Omnitrix\Core\Runtime\Exception\ExceptionHandlerInterface;
 use Omnitrix\Core\Runtime\Lifecycle\ServerRuntime;
+use Omnitrix\Core\Runtime\Shutdown\ResourceRegistry;
 use Omnitrix\Core\Runtime\Worker\WorkerContext;
 use Omnitrix\Facades\Facade;
 use Omnitrix\Http\ErrorResponseFactory;
@@ -33,9 +36,13 @@ use Omnitrix\Observability\HealthCheck;
 use Omnitrix\Routing\HandlerResolver;
 use Omnitrix\Routing\Route;
 use Omnitrix\Routing\Router;
+use OpenSwoole\Coroutine;
 use OpenSwoole\Http\Server;
 use OpenSwoole\Process;
+use OpenSwoole\Runtime;
 use Psr\Log\LoggerInterface;
+use Psr\Log\LogLevel;
+use Throwable;
 
 use function getmypid;
 use function hrtime;
@@ -91,7 +98,8 @@ final class Application
         }
         /** @var array<string, mixed> $http */
         $this->http = HttpServerConfig::fromArray($http, $runtime->runtimeConfig()->packageMaxLength);
-        $debug = $config['debug'] ?? false;
+        $app = $config['app'] ?? [];
+        $debug = $config['debug'] ?? (is_array($app) ? ($app['debug'] ?? false) : false);
         if (!is_bool($debug)) {
             throw InvalidConfigurationException::at('debug', 'expected boolean');
         }
@@ -105,7 +113,26 @@ final class Application
      */
     public static function create(array $config, ?LoggerInterface $logger = null, ?ExceptionHandlerInterface $exceptionHandler = null): self
     {
-        return new self(ServerRuntime::create($config, $logger, $exceptionHandler));
+        return new self(ServerRuntime::create($config, $logger ?? self::defaultLogger($config), $exceptionHandler));
+    }
+
+    /**
+     * JSON lines on stderr, filtered by `app.log_level` (default `info`).
+     *
+     * @param array<string, mixed> $config
+     */
+    private static function defaultLogger(array $config): LoggerInterface
+    {
+        $app = $config['app'] ?? [];
+        $level = is_array($app) ? ($app['log_level'] ?? LogLevel::INFO) : LogLevel::INFO;
+        if (!is_string($level)) {
+            throw InvalidConfigurationException::at('app.log_level', 'expected a PSR-3 level name');
+        }
+        try {
+            return new JsonLogger(minimumLevel: $level);
+        } catch (InvalidArgumentException) {
+            throw InvalidConfigurationException::at('app.log_level', "unknown level '{$level}'");
+        }
     }
 
     // --- routing ----------------------------------------------------------------------------
@@ -440,6 +467,56 @@ final class Application
     }
 
     /**
+     * Runs `$body` with the application's services (database, Redis, cache, queue producer,
+     * HTTP client) available through the facades, outside the HTTP server: console commands,
+     * queue workers, scripts and tests. Starts a coroutine container (with runtime hooks)
+     * when called outside a coroutine; services are released when `$body` returns or throws.
+     *
+     * @template T
+     *
+     * @param callable(): T $body
+     *
+     * @return T
+     */
+    public function withServices(callable $body): mixed
+    {
+        $run = function () use ($body): mixed {
+            $container = new Container();
+            $resources = new ResourceRegistry();
+            $previous = Facade::container();
+            $this->registerServices($container, $resources, warmUp: false);
+            Facade::setContainer($container);
+            try {
+                return $body();
+            } finally {
+                Facade::setContainer($previous);
+                $resources->releaseAll();
+            }
+        };
+        if (Coroutine::getCid() > 0) {
+            return $run();
+        }
+        $result = null;
+        $failure = null;
+        $runtime = $this->runtime->runtimeConfig();
+        Coroutine::set(['log_level' => $runtime->logLevel] + ($runtime->logFile === null ? [] : ['log_file' => $runtime->logFile]));
+        Runtime::enableCoroutine(true, Runtime::HOOK_ALL);
+        Coroutine::run(static function () use ($run, &$result, &$failure): void {
+            try {
+                $result = $run();
+            } catch (Throwable $e) {
+                $failure = $e;
+            }
+        });
+        if ($failure !== null) {
+            throw $failure;
+        }
+
+        /** @var T $result */
+        return $result;
+    }
+
+    /**
      * Registers the optional modules whose config sections are present. Each module is a
      * worker-scoped singleton with its resources registered for release on WorkerStop.
      */
@@ -448,6 +525,11 @@ final class Application
         if ($this->cpuConfig !== null) {
             $worker->container->instance(CpuPool::class, new CpuPool($this->cpuConfig, $this->cpuBoard ?? new CpuLoadBoard($this->cpuConfig->workers)));
         }
+        $this->registerServices($worker->container, $worker->resources, warmUp: true);
+    }
+
+    private function registerServices(Container $container, ResourceRegistry $resources, bool $warmUp): void
+    {
         $config = $this->runtime->config();
         $httpClientSection = $config['http_client'] ?? [];
         if (!is_array($httpClientSection)) {
@@ -455,8 +537,8 @@ final class Application
         }
         /** @var array<string, mixed> $httpClientSection */
         $httpClient = new HttpClient(HttpClientConfig::fromArray($httpClientSection));
-        $worker->container->instance(HttpClient::class, $httpClient);
-        $worker->resources->register('http_client', static function () use ($httpClient): void {
+        $container->instance(HttpClient::class, $httpClient);
+        $resources->register('http_client', static function () use ($httpClient): void {
             $httpClient->close();
         }, 100);
 
@@ -464,8 +546,8 @@ final class Application
         if (is_array($redis)) {
             /** @var array<string, mixed> $redis */
             $client = new RedisClient(RedisConfig::fromArray($redis));
-            $worker->container->instance(RedisClient::class, $client);
-            $worker->resources->register('redis', static function () use ($client): void {
+            $container->instance(RedisClient::class, $client);
+            $resources->register('redis', static function () use ($client): void {
                 $client->close();
             }, 60);
             $cacheSection = $config['cache'] ?? [];
@@ -477,19 +559,21 @@ final class Application
             if (!is_string($prefix) || !is_int($ttl) || $ttl < 0) {
                 throw InvalidConfigurationException::at('cache', "expected 'prefix' string and 'ttl' non-negative integer");
             }
-            $worker->container->instance(CacheService::class, new CacheService($client, $prefix, $ttl));
-            $worker->container->instance(QueueProducer::class, new QueueProducer(new RedisQueue($client)));
+            $container->instance(CacheService::class, new CacheService($client, $prefix, $ttl));
+            $container->instance(QueueProducer::class, new QueueProducer(new RedisQueue($client)));
         }
 
         $database = $config['database'] ?? null;
         if (is_array($database) && $database !== []) {
             /** @var array<string, mixed> $database */
             $manager = new DatabaseManager($database, $this->runtime->logger());
-            $worker->container->instance(DatabaseManager::class, $manager);
-            $worker->resources->register('database', static function () use ($manager): void {
+            $container->instance(DatabaseManager::class, $manager);
+            $resources->register('database', static function () use ($manager): void {
                 $manager->close();
             }, 50);
-            $manager->warmUp();
+            if ($warmUp) {
+                $manager->warmUp();
+            }
         }
     }
 

@@ -7,7 +7,7 @@ namespace Omnitrix\Facades;
 use Omnitrix\Core\Queue\QueueProducer;
 
 /**
- * Background jobs (see docs/background-jobs.md).
+ * Background jobs (documentation: Async & services → Queues).
  *
  * ```php
  * Queue::dispatch('emails.send', ['user_id' => 10]);

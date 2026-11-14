@@ -7,7 +7,7 @@ namespace Omnitrix\Facades;
 use Omnitrix\Core\Cache\Cache as CacheService;
 
 /**
- * Application cache (see docs/redis.md).
+ * Application cache (documentation: Async & services → Redis and cache).
  *
  * ```php
  * Cache::set('user:10', $user, 3600);

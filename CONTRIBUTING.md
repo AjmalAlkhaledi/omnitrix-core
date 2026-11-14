@@ -44,8 +44,8 @@ change without notice.
 
 - Every change comes with tests; integration tests use real services, not mocks of them.
 - Keep the public API small and documented. Mark framework-only plumbing `@internal`.
-- Update `docs/` and `CHANGELOG.md` with user-visible changes. Regenerate the API reference
-  with `php tools/api_reference.php`.
+- Update the documentation site and `CHANGELOG.md` with user-visible changes. The API reference
+  page is generated with `php tools/api_reference.php` (run `npm run api` in the docs project).
 - Commit messages: imperative mood, a short summary line, details in the body when useful.
 
 ## Continuous integration

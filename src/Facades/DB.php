@@ -11,7 +11,7 @@ use Omnitrix\Core\Database\Query\Builder;
 use Omnitrix\Core\Database\Query\Expression;
 
 /**
- * Database access (see docs/database.md).
+ * Database access (documentation: Database).
  *
  * ```php
  * $user = DB::table('users')->where('id', 10)->first();

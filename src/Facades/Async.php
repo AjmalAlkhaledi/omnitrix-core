@@ -10,7 +10,7 @@ use Omnitrix\Core\Concurrency\Outcome;
 use Omnitrix\Core\Concurrency\TaskScope;
 
 /**
- * Public entry point for structured concurrency (see docs/concurrency.md).
+ * Public entry point for structured concurrency (documentation: Async & services → Concurrency).
  *
  * ```php
  * $results = Async::all([

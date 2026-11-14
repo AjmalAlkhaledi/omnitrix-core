@@ -25,6 +25,11 @@ abstract class Facade
         self::$container = $container;
     }
 
+    public static function container(): ?ContainerInterface
+    {
+        return self::$container;
+    }
+
     public static function hasContainer(): bool
     {
         return self::$container !== null;

@@ -9,7 +9,7 @@ use Omnitrix\Core\HttpClient\PendingRequest;
 use Omnitrix\Core\HttpClient\Response;
 
 /**
- * Outbound HTTP (see docs/http-client.md).
+ * Outbound HTTP (documentation: Async & services → HTTP client).
  *
  * ```php
  * $data = Http::timeout(5)->withHeaders(['Authorization' => 'Bearer TOKEN'])->get('https://api.example.com/users')->json();
