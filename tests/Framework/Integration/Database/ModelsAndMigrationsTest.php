@@ -175,7 +175,7 @@ final class ModelsAndMigrationsTest extends TestCase
             $bobPost = $b->posts->first();
             self::assertNotNull($annPost);
             self::assertNotNull($bobPost);
-            self::assertSame(['php', 'async'], $annPost->tags->pluck('name'));
+            self::assertEqualsCanonicalizing(['php', 'async'], $annPost->tags->pluck('name'), 'eager pivot rows have no guaranteed order');
             self::assertSame(['Nice'], $annPost->comments->pluck('body'));
             self::assertNull($b->profile);
             self::assertSame([], $bobPost->tags->pluck('name'));

@@ -241,8 +241,12 @@ final class RuntimeServerTest extends TestCase
         } while (!$ok && hrtime(true) < $deadline);
         self::assertTrue($ok, 'service recovered after worker crash');
 
-        Sleep::milliseconds(500);
-        $after = $this->workerPids();
+        // The replacement worker may take a while to start on a loaded machine.
+        $deadline = hrtime(true) + 10e9;
+        do {
+            Sleep::milliseconds(200);
+            $after = $this->workerPids();
+        } while (count($after) < 2 && hrtime(true) < $deadline);
         self::assertCount(2, $after);
         self::assertNotSame($before, $after, 'a replacement worker has a new pid');
         self::assertGreaterThanOrEqual(3, count($this->markers('worker.start')));

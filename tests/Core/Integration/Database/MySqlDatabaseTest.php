@@ -329,13 +329,13 @@ final class MySqlDatabaseTest extends TestCase
     {
         $db = self::makeDatabase(['statement_timeout' => 0.3], 'timeouts');
         try {
-            // MariaDB interrupts SLEEP() with error 1969; MySQL makes an interrupted SLEEP() return 1
-            // without an error, so a CPU-bound statement is used there (error 3024).
+            // MariaDB interrupts SLEEP() with error 1969. MySQL ends an interrupted SLEEP() or
+            // BENCHMARK() without an error, so a long row scan is used there (error 3024).
             $version = $db->select('select version() as v')[0]['v'] ?? '';
             $mariaDb = is_string($version) && stripos($version, 'mariadb') !== false;
             $t = hrtime(true);
             try {
-                $db->select($mariaDb ? 'select sleep(2)' : "select benchmark(10000000000, md5('x'))");
+                $db->select($mariaDb ? 'select sleep(2)' : 'select count(*) from information_schema.columns a, information_schema.columns b, information_schema.columns c');
                 self::fail('statement should be interrupted by the server');
             } catch (QueryTimeoutException $e) {
                 self::assertSame($mariaDb ? 1969 : 3024, $e->driverCode());
