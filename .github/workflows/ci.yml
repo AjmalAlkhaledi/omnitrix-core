@@ -142,7 +142,9 @@ jobs:
           status=${PIPESTATUS[0]}
           if [ "$status" -ne 0 ]; then
             # Annotations are capped at 4 KiB: one line per failed test (name + first message line).
-            echo "::error title=failed tests::$(awk '/^[0-9]+\) /{n=$0; getline m; print n " :: " m}' var/integration.log | head -40 | tr '\n' ' ' | cut -c1-4000)"
+            for kind in error failure; do
+              echo "::error title=${kind}s::$(sed -n "/^There w[a-z]* [0-9]* ${kind}/,/^There w\|^FAILURES\|^ERRORS/p" var/integration.log | awk '/^[0-9]+\) /{n=$0; getline m; print n " :: " m}' | head -40 | tr '\n' ' ' | cut -c1-4000)"
+            done
             if [ -f var/mysql/mariadbd.pid ] && kill -0 "$(cat var/mysql/mariadbd.pid)" 2>/dev/null; then state=alive; else state=gone; fi
             echo "::error title=mysqld after tests ($state)::$(tail -n 30 var/mysql/error.log 2>/dev/null | tr '\n' ' ' | cut -c1-4000)"
             echo "::error title=first test output::$(grep -m1 -n -iE 'refused|gone away|lost connection' var/integration.log | cut -c1-300) :: $(head -c 2500 var/integration.log | tr '\n' ' ')"

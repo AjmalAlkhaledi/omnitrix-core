@@ -34,6 +34,7 @@ use function hrtime;
 use function is_array;
 use function is_int;
 use function is_string;
+use function stripos;
 
 /**
  * Database acceptance tests against a real MariaDB (bin/services): CRUD, injection safety,
@@ -328,12 +329,16 @@ final class MySqlDatabaseTest extends TestCase
     {
         $db = self::makeDatabase(['statement_timeout' => 0.3], 'timeouts');
         try {
+            // MariaDB interrupts SLEEP() with error 1969; MySQL makes an interrupted SLEEP() return 1
+            // without an error, so a CPU-bound statement is used there (error 3024).
+            $version = $db->select('select version() as v')[0]['v'] ?? '';
+            $mariaDb = is_string($version) && stripos($version, 'mariadb') !== false;
             $t = hrtime(true);
             try {
-                $db->select('select sleep(2)');
+                $db->select($mariaDb ? 'select sleep(2)' : "select benchmark(10000000000, md5('x'))");
                 self::fail('statement should be interrupted by the server');
             } catch (QueryTimeoutException $e) {
-                self::assertSame(1969, $e->driverCode());
+                self::assertSame($mariaDb ? 1969 : 3024, $e->driverCode());
             }
             self::assertLessThan(1.0, (hrtime(true) - $t) / 1e9);
             self::assertSame([['ok' => 1]], $db->select('select 1 as ok'), 'connection still usable after a server-side timeout');

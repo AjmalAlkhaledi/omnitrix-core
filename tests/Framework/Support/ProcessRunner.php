@@ -19,6 +19,7 @@ use function proc_close;
 use function proc_get_status;
 use function proc_open;
 use function proc_terminate;
+use function str_starts_with;
 use function sys_get_temp_dir;
 use function tempnam;
 use function unlink;
@@ -195,6 +196,12 @@ final class ProcessRunner
         foreach (['PATH', 'HOME', 'TMPDIR', 'LANG'] as $name) {
             $value = getenv($name);
             if ($value !== false) {
+                $env[$name] = $value;
+            }
+        }
+        // Test service settings (OMNITRIX_TEST_DB_ENGINE, ports...) reach bin/services and fixtures.
+        foreach (getenv() as $name => $value) {
+            if (str_starts_with($name, 'OMNITRIX_TEST_')) {
                 $env[$name] = $value;
             }
         }
