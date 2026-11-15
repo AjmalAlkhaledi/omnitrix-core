@@ -22,10 +22,17 @@ use function array_values;
 use function count;
 use function implode;
 use function in_array;
+use function is_array;
+use function is_bool;
 use function is_int;
 use function is_scalar;
 use function is_string;
+use function ksort;
 use function microtime;
+use function preg_match;
+use function rtrim;
+use function serialize;
+use function sha1;
 use function sort;
 
 /**
@@ -61,6 +68,9 @@ final class CacheCoordinator
     private array $stats = ['hits' => 0, 'misses' => 0, 'bypassed' => 0, 'errors' => 0];
 
     private float $lastErrorLog = 0.0;
+
+    /** @var array<string, array<string, string>> "table.column" => value => collation weight */
+    private array $weights = [];
 
     /**
      * @param Closure(string, list<mixed>): list<array<string, mixed>> $select  runs a query (on the pinned connection inside transactions)
@@ -238,8 +248,9 @@ final class CacheCoordinator
      */
     public function flush(string ...$tables): void
     {
+        $this->schema->reset(); // keys, columns and foreign keys may have changed
         foreach ($tables as $table) {
-            if ($this->schema->isCached($table)) {
+            if ($this->schema->isConfigured($table)) {
                 try {
                     $this->cache->flush($table);
                 } catch (Throwable $e) {
@@ -254,6 +265,9 @@ final class CacheCoordinator
         if ($mutation->isInsert()) {
             return false;
         }
+        if ($this->schema->trackedColumns($mutation->table) !== null) {
+            return true; // the old values of tracked columns must be read
+        }
         $cached = $this->schema->keyColumns($mutation->table);
         if ($cached !== null && ($mutation->keyLookup === null || self::reorder($mutation->keyLookup['columns'], $cached) === null)) {
             return true;
@@ -265,23 +279,31 @@ final class CacheCoordinator
     /** @return list<string> */
     private function insertMarks(Mutation $mutation): array
     {
-        $keyColumns = $this->schema->keyColumns($mutation->table);
-        if ($keyColumns === null) {
-            return [];
-        }
-        $marks = [$this->cache->epochKey($mutation->table)];
-        foreach ($mutation->insertedRows as $row) {
-            $tuple = [];
-            foreach ($keyColumns as $column) {
-                $value = $row[$column] ?? null;
-                if (!is_int($value) && !is_string($value)) {
-                    $tuple = null;
-                    break;
-                }
-                $tuple[] = $value;
+        $table = $mutation->table;
+        $marks = [];
+        $keyColumns = $this->schema->keyColumns($table);
+        if ($keyColumns !== null) {
+            $marks[] = $this->cache->epochKey($table);
+            foreach (self::tuples($mutation->insertedRows, $keyColumns) as $tuple) {
+                $marks[] = $this->cache->versionKey($table, $tuple);
             }
-            if ($tuple !== null) {
-                $marks[] = $this->cache->versionKey($mutation->table, $tuple);
+        }
+        $tracked = $this->schema->trackedColumns($table);
+        if ($tracked !== null) {
+            foreach ($tracked as $column => $info) {
+                $values = [];
+                $unknown = false;
+                foreach ($mutation->insertedRows as $row) {
+                    if (!array_key_exists($column, $row)) {
+                        $unknown = true; // the database default applies; its value is not known here
+                    } else {
+                        $values[] = $row[$column];
+                    }
+                }
+                $marks = array_merge($marks, $this->tagMarks($table, $column, $info, $values));
+                if ($unknown) {
+                    $marks[] = $this->cache->columnKey($table, $column);
+                }
             }
         }
 
@@ -299,27 +321,61 @@ final class CacheCoordinator
         $table = $mutation->table;
         $statements = [[$mutation->sql, $mutation->bindings]];
         $marks = [];
-        $keyColumns = $this->schema->keyColumns($table);
+        $tracked = $this->schema->trackedColumns($table) ?? [];
+        $rowCached = $this->schema->keyColumns($table) !== null;
+        $keyColumns = $rowCached || $tracked !== [] ? $this->schema->primaryKey($table) : null;
         $tuples = null;
         if ($keyColumns !== null) {
             $order = $mutation->keyLookup === null ? null : self::reorder($mutation->keyLookup['columns'], $keyColumns);
-            if ($order !== null && $mutation->keyLookup !== null) {
+            if ($order !== null && $mutation->keyLookup !== null && $tracked === []) {
                 $tuples = array_map(static fn(array $key): array => self::arrange($key, $order), $mutation->keyLookup['keys']);
             } else {
-                $tuples = self::unique(array_map(static fn(array $row): array => self::tuple($row, $keyColumns), $this->selectFor($mutation, $keyColumns)));
+                // Lock the affected rows and read their keys (and the old values of tracked columns).
+                $columns = $keyColumns;
+                foreach (array_keys($tracked) as $column) {
+                    if (!in_array($column, $columns, true)) {
+                        $columns[] = $column;
+                    }
+                }
+                $rows = $this->selectFor($mutation, $columns);
+                $tuples = self::unique(self::tuples($rows, $keyColumns));
                 if ($tuples === []) {
                     return [[], []];
                 }
-                if ($mutation->byKeys !== null) {
+                if ($mutation->byKeys !== null && $order === null) {
                     $statements = [];
                     foreach (array_chunk($tuples, self::CHUNK) as $chunk) {
                         $statements[] = ($mutation->byKeys)($keyColumns, $chunk);
                     }
                 }
+                foreach ($tracked as $column => $info) {
+                    $old = array_map(static fn(array $row): mixed => $row[$column] ?? null, $rows);
+                    $marks = array_merge($marks, $this->tagMarks($table, $column, $info, $old));
+                    if ($mutation->kind === Mutation::UPDATE && array_key_exists($column, $mutation->values)) {
+                        $new = $mutation->values[$column];
+                        $marks = array_merge($marks, is_int($new) || is_string($new) || $new === null
+                            ? $this->tagMarks($table, $column, $info, [$new])
+                            : [$this->cache->columnKey($table, $column)]); // computed value (e.g. increment)
+                    }
+                }
             }
-            $marks = $this->rowMarks($table, $tuples);
-            if (array_intersect($mutation->updatedColumns, $keyColumns) !== []) {
-                $marks[] = $this->cache->epochKey($table); // a changed key may name a row cached as absent
+            if ($rowCached) {
+                $marks = array_merge($marks, $this->rowMarks($table, $tuples));
+                if (array_intersect($mutation->updatedColumns, $keyColumns) !== []) {
+                    $marks[] = $this->cache->epochKey($table); // a changed key may name a row cached as absent
+                }
+            }
+        } elseif ($tracked !== []) {
+            // No primary key: the statement keeps its WHERE; the locked rows give the old values.
+            $rows = $this->selectFor($mutation, array_keys($tracked));
+            foreach ($tracked as $column => $info) {
+                $marks = array_merge($marks, $this->tagMarks($table, $column, $info, array_map(static fn(array $row): mixed => $row[$column] ?? null, $rows)));
+                if ($mutation->kind === Mutation::UPDATE && array_key_exists($column, $mutation->values)) {
+                    $new = $mutation->values[$column];
+                    $marks = array_merge($marks, is_int($new) || is_string($new) || $new === null
+                        ? $this->tagMarks($table, $column, $info, [$new])
+                        : [$this->cache->columnKey($table, $column)]);
+                }
             }
         }
 
@@ -341,44 +397,42 @@ final class CacheCoordinator
     private function cascadeMarks(Mutation $mutation, ?array $keyColumns, ?array $tuples, array $cascades, int $depth): array
     {
         $marks = [];
+        $delete = $mutation->kind === Mutation::DELETE;
         foreach ($cascades as $cascade) {
-            // Values of the referenced parent column for the affected parent rows.
-            if ($keyColumns !== null && $tuples !== null && $keyColumns === [$cascade->parentColumn]) {
-                $values = array_map(static fn(array $t): int|string => $t[0], $tuples);
+            // Values of the referenced parent columns for the affected parent rows.
+            if ($keyColumns !== null && $tuples !== null && $keyColumns === $cascade->parentColumns) {
+                $values = $tuples;
             } else {
-                $values = [];
-                foreach ($this->selectFor($mutation, [$cascade->parentColumn]) as $row) {
-                    $value = $row[$cascade->parentColumn] ?? null;
-                    if (is_int($value) || is_string($value)) {
-                        $values[] = $value;
-                    }
-                }
+                $values = self::tuples($this->selectFor($mutation, $cascade->parentColumns), $cascade->parentColumns);
             }
-            $marks = array_merge($marks, $this->childMarks($cascade, self::uniqueScalars($values), $depth));
+            $marks = array_merge($marks, $this->childMarks($cascade, self::unique($values), $delete, $depth));
         }
 
         return $marks;
     }
 
     /**
-     * Marks the rows of `$cascade->childTable` that reference `$values`, and recursively the rows
-     * their own deletion cascades into.
+     * Marks the rows of `$cascade->childTable` that reference `$values` (tuples of the referenced
+     * parent columns) — cached rows and query tags of their tracked columns — and recursively the
+     * rows their own deletion cascades into.
      *
-     * @param list<int|string> $values
+     * @param list<list<int|string>> $values
      *
      * @return list<string>
      */
-    private function childMarks(Cascade $cascade, array $values, int $depth): array
+    private function childMarks(Cascade $cascade, array $values, bool $delete, int $depth): array
     {
-        $childKeys = $this->schema->keyColumns($cascade->childTable);
+        $child = $cascade->childTable;
+        $childKeys = $this->schema->keyColumns($child);
+        $tracked = $this->schema->trackedColumns($child) ?? [];
         if ($values === [] || $depth >= self::MAX_CASCADE_DEPTH) {
             return [];
         }
         $columns = $childKeys ?? [];
-        $grandchildren = $cascade->onDelete ? $this->schema->cascadesFrom($cascade->childTable) : [];
-        foreach ($grandchildren as $next) {
-            if (!in_array($next->parentColumn, $columns, true)) {
-                $columns[] = $next->parentColumn;
+        $grandchildren = $delete && $cascade->onDelete ? $this->schema->cascadesFrom($child) : [];
+        foreach ([...array_keys($tracked), ...array_merge([], ...array_map(static fn(Cascade $c): array => $c->parentColumns, $grandchildren))] as $column) {
+            if (!in_array($column, $columns, true)) {
+                $columns[] = $column;
             }
         }
         if ($columns === []) {
@@ -387,26 +441,239 @@ final class CacheCoordinator
         $rows = [];
         foreach (array_chunk($values, self::CHUNK) as $chunk) {
             $sql = 'select ' . implode(', ', array_map(fn(string $c): string => $this->grammar->wrap($c), $columns))
-                . ' from ' . $this->grammar->wrapTable($cascade->childTable)
-                . ' where ' . $this->grammar->wrap($cascade->childColumn) . ' in (' . implode(', ', array_fill(0, count($chunk), '?')) . ') for update';
-            $rows = array_merge($rows, ($this->select)($sql, $chunk));
+                . ' from ' . $this->grammar->wrapTable($child)
+                . ' where ' . $this->keyCondition($cascade->childColumns, count($chunk)) . ' for update';
+            $rows = array_merge($rows, ($this->select)($sql, self::flatten($chunk)));
         }
         $marks = [];
         if ($childKeys !== null) {
-            $marks = $this->rowMarks($cascade->childTable, array_map(static fn(array $row): array => self::tuple($row, $childKeys), $rows));
+            $marks = $this->rowMarks($child, self::tuples($rows, $childKeys));
+        }
+        foreach ($tracked as $column => $info) {
+            $marks = array_merge($marks, $this->tagMarks($child, $column, $info, array_map(static fn(array $row): mixed => $row[$column] ?? null, $rows)));
+            if (!$delete && in_array($column, $cascade->childColumns, true)) {
+                $marks[] = $this->cache->columnKey($child, $column); // the cascaded new value is not read here
+            }
         }
         foreach ($grandchildren as $next) {
-            $nextValues = [];
-            foreach ($rows as $row) {
-                $value = $row[$next->parentColumn] ?? null;
-                if (is_int($value) || is_string($value)) {
-                    $nextValues[] = $value;
-                }
-            }
-            $marks = array_merge($marks, $this->childMarks($next, self::uniqueScalars($nextValues), $depth + 1));
+            $marks = array_merge($marks, $this->childMarks($next, self::unique(self::tuples($rows, $next->parentColumns)), $delete, $depth + 1));
         }
 
         return $marks;
+    }
+
+    // --- query tags -------------------------------------------------------------------------
+
+    /**
+     * @param list<mixed>                $predicates
+     * @param list<mixed>                $bindings
+     * @param Closure(): list<array<string, mixed>> $fallback
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function selectCached(string $table, string $sql, array $bindings, array $predicates, int $ttl, Closure $fallback): array
+    {
+        if ($this->transactions->inTransaction()) {
+            return $fallback();
+        }
+        $tracked = $this->schema->trackedColumns($table);
+        if ($tracked === null) {
+            return $fallback();
+        }
+        $best = null;
+        foreach ($predicates as $predicate) {
+            if (!is_array($predicate) || !is_string($predicate['column'] ?? null) || !is_array($predicate['values'] ?? null) || !isset($tracked[$predicate['column']])) {
+                continue;
+            }
+            if ($predicate['values'] !== [] && ($best === null || count($predicate['values']) < count($best['values']))) {
+                $best = ['column' => $predicate['column'], 'values' => array_values($predicate['values'])];
+            }
+        }
+        if ($best === null) {
+            return $fallback();
+        }
+        $column = $best['column'];
+        try {
+            $tags = $this->tagValues($table, $column, $tracked[$column], $best['values'], strict: true);
+        } catch (Throwable $e) {
+            $this->failed('tags', $e);
+
+            return $fallback();
+        }
+        if ($tags === null) {
+            return $fallback(); // a value the column cannot hold (e.g. 'abc' for an integer column)
+        }
+        $dependencies = [$this->cache->generationKey($table), $this->cache->columnKey($table, $column)];
+        foreach ($tags as $tag) {
+            $dependencies[] = $this->cache->tagKey($table, $column, $tag);
+        }
+        $key = $this->cache->queryKey($table, sha1(serialize([$sql, $bindings])));
+        try {
+            $lookup = $this->cache->lookupQuery($key, $dependencies);
+        } catch (Throwable $e) {
+            $this->failed('lookup', $e);
+
+            return $fallback();
+        }
+        if ($lookup->hit && $lookup->rows !== null) {
+            $this->stats['hits']++;
+
+            return $lookup->rows;
+        }
+        $lookup->fillable ? $this->stats['misses']++ : $this->stats['bypassed']++;
+        $rows = $fallback();
+        try {
+            $this->cache->fillQuery($key, $dependencies, $lookup, $rows, $ttl);
+        } catch (Throwable $e) {
+            $this->failed('fill', $e);
+        }
+
+        return $rows;
+    }
+
+    /**
+     * Tag version keys for rows whose `$column` holds one of `$values`.
+     *
+     * @param array{kind: 'int'|'string', charset: string, collation: string} $info
+     * @param list<mixed>                                                      $values
+     *
+     * @return list<string>
+     */
+    private function tagMarks(string $table, string $column, array $info, array $values): array
+    {
+        $tags = $this->tagValues($table, $column, $info, $values, strict: false);
+        if ($tags === null) {
+            return [$this->cache->columnKey($table, $column)];
+        }
+
+        return array_map(fn(string $tag): string => $this->cache->tagKey($table, $column, $tag), $tags);
+    }
+
+    /**
+     * Canonical tags of values as the column compares them: integers by value, text by the
+     * column's collation weight (trailing spaces ignored). NULL values get no tag (no query
+     * matches them with `=`). Returns null when a value cannot be tagged.
+     *
+     * @param array{kind: 'int'|'string', charset: string, collation: string} $info
+     * @param list<mixed>                                                      $values
+     *
+     * @return list<string>|null
+     */
+    private function tagValues(string $table, string $column, array $info, array $values, bool $strict): ?array
+    {
+        $tags = [];
+        if ($info['kind'] === 'int') {
+            foreach ($values as $value) {
+                if ($value === null) {
+                    continue;
+                }
+                if (!is_int($value) && (!is_string($value) || preg_match('/^-?\d+$/', $value) !== 1)) {
+                    return null;
+                }
+                $tags[(string) (int) $value] = true;
+            }
+
+            return array_map(static fn(int|string $t): string => (string) $t, array_keys($tags));
+        }
+        $pending = [];
+        $memo = $table . '.' . $column;
+        foreach ($values as $value) {
+            if ($value === null) {
+                continue;
+            }
+            if (!is_scalar($value)) {
+                return null;
+            }
+            $text = rtrim(is_bool($value) ? ($value ? '1' : '0') : (string) $value, ' ');
+            if (isset($this->weights[$memo][$text])) {
+                $tags[$this->weights[$memo][$text]] = true;
+            } else {
+                $pending[$text] = true;
+            }
+        }
+        if ($pending !== []) {
+            if (preg_match('/^[A-Za-z0-9_]+$/', $info['charset'] . $info['collation']) !== 1) {
+                return null;
+            }
+            if (count($this->weights[$memo] ?? []) > 10000) {
+                $this->weights[$memo] = [];
+            }
+            foreach (array_chunk(array_map(static fn(int|string $t): string => (string) $t, array_keys($pending)), 200) as $chunk) {
+                $parts = [];
+                foreach (array_keys($chunk) as $i) {
+                    $parts[] = "hex(weight_string(convert(? using {$info['charset']}) collate {$info['collation']})) as w{$i}";
+                }
+                $row = ($this->select)('select ' . implode(', ', $parts), $chunk)[0] ?? [];
+                foreach ($chunk as $i => $text) {
+                    $weight = $row["w{$i}"] ?? null;
+                    if (!is_string($weight)) {
+                        return null;
+                    }
+                    $this->weights[$memo][$text] = $weight;
+                    $tags[$weight] = true;
+                }
+            }
+        }
+
+        return array_map(static fn(int|string $t): string => (string) $t, array_keys($tags));
+    }
+
+    /**
+     * `col IN (?, …)` for one column, `(a = ? and b = ?) or …` for several.
+     *
+     * @param list<string> $columns
+     */
+    private function keyCondition(array $columns, int $count): string
+    {
+        if (count($columns) === 1) {
+            return $this->grammar->wrap($columns[0]) . ' in (' . implode(', ', array_fill(0, $count, '?')) . ')';
+        }
+        $tuple = '(' . implode(' and ', array_map(fn(string $c): string => $this->grammar->wrap($c) . ' = ?', $columns)) . ')';
+
+        return implode(' or ', array_fill(0, $count, $tuple));
+    }
+
+    /**
+     * Key tuples of the rows, skipping rows with a NULL in any of the columns.
+     *
+     * @param list<array<string, mixed>> $rows
+     * @param list<string>               $columns
+     *
+     * @return list<list<int|string>>
+     */
+    private static function tuples(array $rows, array $columns): array
+    {
+        $tuples = [];
+        foreach ($rows as $row) {
+            $tuple = [];
+            foreach ($columns as $column) {
+                $value = $row[$column] ?? null;
+                if (!is_int($value) && !is_string($value)) {
+                    continue 2;
+                }
+                $tuple[] = $value;
+            }
+            $tuples[] = $tuple;
+        }
+
+        return $tuples;
+    }
+
+    /**
+     * @param list<list<int|string>> $tuples
+     *
+     * @return list<int|string>
+     */
+    private static function flatten(array $tuples): array
+    {
+        $flat = [];
+        foreach ($tuples as $tuple) {
+            foreach ($tuple as $value) {
+                $flat[] = $value;
+            }
+        }
+
+        return $flat;
     }
 
     /**
@@ -418,7 +685,7 @@ final class CacheCoordinator
     {
         $relevant = [];
         foreach ($this->schema->cascadesFrom($table) as $cascade) {
-            if ($delete ? $cascade->onDelete : ($cascade->onUpdate && in_array($cascade->parentColumn, $updatedColumns, true))) {
+            if ($delete ? $cascade->onDelete : ($cascade->onUpdate && array_intersect($cascade->parentColumns, $updatedColumns) !== [])) {
                 $relevant[] = $cascade;
             }
         }
@@ -523,19 +790,7 @@ final class CacheCoordinator
     {
         $rows = [];
         foreach (array_chunk($tuples, self::CHUNK) as $chunk) {
-            if (count($keyColumns) === 1) {
-                $condition = $this->grammar->wrap($keyColumns[0]) . ' in (' . implode(', ', array_fill(0, count($chunk), '?')) . ')';
-            } else {
-                $tuple = '(' . implode(' and ', array_map(fn(string $c): string => $this->grammar->wrap($c) . ' = ?', $keyColumns)) . ')';
-                $condition = implode(' or ', array_fill(0, count($chunk), $tuple));
-            }
-            $bindings = [];
-            foreach ($chunk as $key) {
-                foreach ($key as $value) {
-                    $bindings[] = $value;
-                }
-            }
-            foreach (($this->select)('select * from ' . $this->grammar->wrapTable($table) . ' where ' . $condition, $bindings) as $row) {
+            foreach (($this->select)('select * from ' . $this->grammar->wrapTable($table) . ' where ' . $this->keyCondition($keyColumns, count($chunk)), self::flatten($chunk)) as $row) {
                 $rows[self::fingerprint(self::tuple($row, $keyColumns))] = $row;
             }
         }
@@ -620,21 +875,6 @@ final class CacheCoordinator
         $unique = [];
         foreach ($tuples as $tuple) {
             $unique[self::fingerprint($tuple)] = $tuple;
-        }
-
-        return array_values($unique);
-    }
-
-    /**
-     * @param list<int|string> $values
-     *
-     * @return list<int|string>
-     */
-    private static function uniqueScalars(array $values): array
-    {
-        $unique = [];
-        foreach ($values as $value) {
-            $unique[(string) $value] = $value;
         }
 
         return array_values($unique);

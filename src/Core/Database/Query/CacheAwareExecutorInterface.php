@@ -27,6 +27,18 @@ interface CacheAwareExecutorInterface extends QueryExecutorInterface
      */
     public function selectByKeys(string $table, array $columns, array $keys, Closure $fallback): array;
 
+    /**
+     * Result of a query marked with {@see Builder::cache()}, served from the cache when the
+     * query filters on a column the connection tracks for `$table`.
+     *
+     * @param list<mixed>                                        $bindings
+     * @param list<array{column: string, values: list<mixed>}>   $predicates equality / IN conditions joined with AND at the top level
+     * @param Closure(): list<array<string, mixed>>              $fallback
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function selectCached(string $table, string $sql, array $bindings, array $predicates, int $ttl, Closure $fallback): array;
+
     /** Runs a write; returns the affected row count, or the generated id for insertGetId. */
     public function mutate(Mutation $mutation): int;
 }

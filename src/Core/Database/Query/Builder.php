@@ -14,6 +14,7 @@ use function array_key_first;
 use function array_keys;
 use function array_map;
 use function array_merge;
+use function array_slice;
 use function array_values;
 use function count;
 use function func_num_args;
@@ -65,6 +66,8 @@ final class Builder
     private ?int $offset = null;
 
     private bool $lockForUpdate = false;
+
+    private ?int $cacheTtl = null;
 
     /** @var array<string, list<mixed>> */
     private array $bindings = ['select' => [], 'join' => [], 'where' => [], 'having' => []];
@@ -171,7 +174,7 @@ final class Builder
             return $this;
         }
         if ($column instanceof Expression) {
-            $this->wheres[] = new WhereClause('raw', $boolean, sql: $column->sql);
+            $this->wheres[] = new WhereClause('raw', $boolean, count: count($column->bindings), sql: $column->sql);
             $this->bindings['where'] = array_merge($this->bindings['where'], $column->bindings);
 
             return $this;
@@ -365,6 +368,22 @@ final class Builder
 
     // --- execute ----------------------------------------------------------------------------
 
+    /**
+     * Caches the result of this query for `$seconds` when the connection tracks one of the columns
+     * it filters on with `=` or `IN` (the `cache.queries` option). The entry is invalidated when a
+     * row with a matching value is written — before or after the write — not on every write to the
+     * table. Queries that cannot be tracked run normally.
+     */
+    public function cache(int $seconds): self
+    {
+        if ($seconds < 1) {
+            throw new InvalidArgumentException('cache() needs a lifetime of at least one second');
+        }
+        $this->cacheTtl = $seconds;
+
+        return $this;
+    }
+
     /** @return list<array<string, mixed>> */
     public function get(): array
     {
@@ -377,7 +396,70 @@ final class Builder
             }
         }
 
-        return $this->executor->select($this->toSql(), $this->getBindings());
+        return $this->run($this->toSql(), $this->getBindings());
+    }
+
+    /**
+     * Top-level `col = ?` and `col IN (…)` conditions when every top-level condition is joined
+     * with AND and the query reads only this table; null when the query cannot be tracked.
+     *
+     * @internal used by the query cache
+     *
+     * @return list<array{column: string, values: list<mixed>}>|null
+     */
+    public function cacheDependencies(): ?array
+    {
+        if ($this->from === null || $this->joins !== []) {
+            return null;
+        }
+        $predicates = [];
+        $offset = 0;
+        foreach ($this->wheres as $i => $where) {
+            if ($i > 0 && $where->boolean !== 'and') {
+                return null;
+            }
+            $count = $this->bindingCount($where);
+            $column = $this->keyColumn($where->column);
+            if ($column !== null && $where->type === 'basic' && $where->operator === '=') {
+                $predicates[] = ['column' => $column, 'values' => [$this->bindings['where'][$offset] ?? null]];
+            } elseif ($column !== null && $where->type === 'in' && !$where->not) {
+                $predicates[] = ['column' => $column, 'values' => array_slice($this->bindings['where'], $offset, $where->count)];
+            }
+            $offset += $count;
+        }
+
+        return $predicates;
+    }
+
+    /**
+     * @param list<mixed> $bindings
+     *
+     * @return list<array<string, mixed>>
+     */
+    private function run(string $sql, array $bindings): array
+    {
+        if ($this->cacheTtl !== null && $this->from !== null && $this->executor instanceof CacheAwareExecutorInterface) {
+            $predicates = $this->cacheDependencies();
+            if ($predicates !== null && $predicates !== []) {
+                $executor = $this->executor;
+
+                return $executor->selectCached($this->from, $sql, $bindings, $predicates, $this->cacheTtl, static fn(): array => $executor->select($sql, $bindings));
+            }
+        }
+
+        return $this->executor->select($sql, $bindings);
+    }
+
+    private function bindingCount(WhereClause $where): int
+    {
+        return match ($where->type) {
+            'basic' => 1,
+            'in' => $where->count,
+            'between' => 2,
+            'raw' => $where->count,
+            'nested' => $where->nested === null ? 0 : count($where->nested->bindings['where']),
+            default => 0,
+        };
     }
 
     /** @return array<string, mixed>|null */
@@ -428,7 +510,7 @@ final class Builder
     public function exists(): bool
     {
         $sql = 'select exists(' . $this->toSql() . ') as `exists`';
-        $rows = $this->executor->select($sql, $this->getBindings());
+        $rows = $this->run($sql, $this->getBindings());
         $value = $rows[0]['exists'] ?? 0;
 
         return (int) (is_int($value) || is_string($value) ? $value : 0) === 1;
@@ -514,6 +596,7 @@ final class Builder
                 updatedColumns: array_map(static fn(int|string $c): string => (string) $c, array_keys($values)),
                 selectKeys: $this->keySelector(),
                 byKeys: fn(array $columns, array $keys): array => [$head . ' where ' . $this->compileKeyCondition($columns, $keys), array_merge($bindings, self::flatten($keys))],
+                values: self::assignments($values),
             ));
         }
 
@@ -627,6 +710,21 @@ final class Builder
         }
 
         return ['columns' => $columns, 'keys' => [$tuple]];
+    }
+
+    /**
+     * @param array<array-key, mixed> $values
+     *
+     * @return array<string, mixed>
+     */
+    private static function assignments(array $values): array
+    {
+        $typed = [];
+        foreach ($values as $column => $value) {
+            $typed[(string) $column] = $value;
+        }
+
+        return $typed;
     }
 
     /** `id`, `users.id` or `` `users`.`id` `` on this table → `id`; anything else → null. */

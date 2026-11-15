@@ -16,6 +16,11 @@ All notable changes to this project are documented in this file. The format foll
   outermost transaction ends, so no reader is served a value older than a committed write.
   Absent rows are cached until an insert into the table; schema changes retire a table's
   entries.
+- Query result cache: `->cache($seconds)` on queries that filter with `=`/`IN` on a column listed
+  in `cache.queries`; invalidated by writes to rows holding a filtered value (before or after the
+  write), compared by the column collation, not by writes to the rest of the table.
+- Cascades through composite foreign keys, cache metrics in `/metrics`, and the cache
+  configuration is validated when the application is created.
 - `afterCommit()` on connections and the `DB` facade, with nested-transaction semantics.
 - `DB::writing()` for raw SQL writes to cached tables, `DB::invalidate()` for rows changed
   outside the application and `Database::flushCache()` for table-level changes.

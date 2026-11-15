@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Omnitrix\Tests\Integration\Database;
 
 use Omnitrix\Application;
+use Omnitrix\Core\Runtime\Config\InvalidConfigurationException;
 use Omnitrix\Database\Migrations\Migrator;
 use Omnitrix\Facades\DB;
 use Omnitrix\Tests\Support\Models\Post;
@@ -25,12 +26,23 @@ use function uniqid;
 #[CoversNothing]
 final class ModelRowCacheTest extends TestCase
 {
+    public function testTheCacheWithoutRedisIsRejectedWhenTheApplicationIsCreated(): void
+    {
+        $config = ModelsAndMigrationsTest::config();
+        self::assertTrue(is_array($config['database']));
+        $config['database']['cache'] = ['tables' => ['users']];
+
+        $this->expectException(InvalidConfigurationException::class);
+        $this->expectExceptionMessage('database.default.cache');
+        Application::create(['server' => ['port' => 18621]] + $config);
+    }
+
     public function testModelsUseTheRowCacheWithoutApplicationCode(): void
     {
         ModelsAndMigrationsTest::createDatabase();
         $config = ModelsAndMigrationsTest::config();
         self::assertTrue(is_array($config['database']));
-        $config['database']['cache'] = ['tables' => ['users', 'posts'], 'ttl' => 60];
+        $config['database']['cache'] = ['tables' => ['users', 'posts'], 'queries' => ['posts' => ['user_id']], 'ttl' => 60];
         $config['redis'] = ['host' => Services::redisHost(), 'port' => Services::redisPort(), 'prefix' => 'model-cache-' . uniqid() . ':'];
         $app = Application::create(['server' => ['port' => 18620]] + $config);
         $behind = new PDO('mysql:host=' . Services::dbHost() . ';port=' . Services::dbPort() . ';dbname=' . ModelsAndMigrationsTest::database(), Services::dbUser(), Services::dbPassword());
@@ -53,6 +65,18 @@ final class ModelRowCacheTest extends TestCase
             self::assertSame(['Ann B.', 'changed behind'], User::query()->findMany([$ann->id, $bob->id])->pluck('name'), 'uncached rows are read once');
             $behind->exec("UPDATE users SET name = 'twice' WHERE id = {$bob->id}");
             self::assertSame('changed behind', User::findOrFail($bob->id)->name, 'and then cached');
+
+            $titles = static fn(int $user): array => Post::where('user_id', $user)->orderBy('id')->cache(60)->get()->pluck('title');
+            self::assertSame(['Hello'], $titles($ann->id));
+            $behind->exec("UPDATE posts SET title = 'behind' WHERE id = {$post->id}");
+            self::assertSame(['Hello'], $titles($ann->id), 'model queries use the query cache');
+            $bob->posts()->create(['title' => 'Bob post']);
+            self::assertSame(['Hello'], $titles($ann->id), "a new post by Bob leaves Ann's query cached");
+            $ann->posts()->create(['title' => 'Second']);
+            self::assertSame(['behind', 'Second'], $titles($ann->id));
+            $page = Post::where('user_id', $ann->id)->orderBy('id')->cache(60)->paginate(perPage: 1, page: 2);
+            self::assertSame(2, $page->total);
+            self::assertSame('Second', $page->items->first()?->title);
 
             $ann->delete();
             self::assertNull(Post::find($post->id), 'ON DELETE CASCADE into a cached table is invalidated too');

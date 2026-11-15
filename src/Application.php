@@ -104,6 +104,11 @@ final class Application
             throw InvalidConfigurationException::at('debug', 'expected boolean');
         }
         $this->debug = $debug;
+        $database = $config['database'] ?? null;
+        if (is_array($database) && $database !== []) {
+            /** @var array<string, mixed> $database */
+            DatabaseManager::validate($database, isset($config['redis']));
+        }
     }
 
     /**
@@ -405,6 +410,11 @@ final class Application
                 foreach ($manager->names() as $name) {
                     foreach ($manager->connection($name)->stats()->toArray() as $k => $v) {
                         $gauges["omnitrix_db_pool_{$k}{connection=\"{$name}\",worker=\"{$worker}\"}"] = $v;
+                    }
+                    if ($manager->connection($name)->cacheEnabled()) {
+                        foreach ($manager->connection($name)->cacheStats() as $k => $v) {
+                            $gauges["omnitrix_db_cache_{$k}_total{connection=\"{$name}\",worker=\"{$worker}\"}"] = $v;
+                        }
                     }
                 }
             }

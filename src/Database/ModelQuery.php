@@ -170,6 +170,20 @@ final class ModelQuery
         return $this;
     }
 
+    /**
+     * Caches the result for `$seconds` when the query filters with `=` or `IN` on a column listed
+     * in the connection's `cache.queries` option. Writes to rows with a matching value invalidate
+     * it; writes to other rows do not.
+     *
+     * @return $this
+     */
+    public function cache(int $seconds): self
+    {
+        $this->builder->cache($seconds);
+
+        return $this;
+    }
+
     /** @return Collection<TModel> */
     public function get(): Collection
     {

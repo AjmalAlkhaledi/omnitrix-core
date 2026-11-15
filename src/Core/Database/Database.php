@@ -90,6 +90,20 @@ final class Database implements CacheAwareExecutorInterface
         return $this->cache === null ? $fallback() : $this->cache->selectByKeys($table, $columns, $keys, $fallback);
     }
 
+    /**
+     * @internal called by the query builder for queries marked with cache()
+     *
+     * @param list<mixed>                                       $bindings
+     * @param list<array{column: string, values: list<mixed>}>  $predicates
+     * @param Closure(): list<array<string, mixed>>             $fallback
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function selectCached(string $table, string $sql, array $bindings, array $predicates, int $ttl, Closure $fallback): array
+    {
+        return $this->cache === null ? $fallback() : $this->cache->selectCached($table, $sql, $bindings, $predicates, $ttl, $fallback);
+    }
+
     /** @internal called by the query builder for every write */
     public function mutate(Mutation $mutation): int
     {

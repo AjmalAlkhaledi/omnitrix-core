@@ -62,6 +62,9 @@ final class RowCacheTest extends TestCase
         $this->behind->exec("INSERT INTO posts VALUES (10, 1, 'First'), (11, 1, 'Second'), (12, 2, 'Bob post')");
         $this->behind->exec("INSERT INTO comments VALUES (100, 10, 'Nice'), (101, 12, 'Hm')");
         $this->behind->exec("INSERT INTO memberships VALUES (1, 7, 'owner'), (2, 7, 'member')");
+        $this->behind->exec('CREATE TABLE grants (id INT PRIMARY KEY, user_id INT NOT NULL, team_id INT NOT NULL, scope VARCHAR(20) NOT NULL,'
+            . ' CONSTRAINT grants_membership FOREIGN KEY (user_id, team_id) REFERENCES memberships (user_id, team_id) ON DELETE CASCADE ON UPDATE CASCADE) ENGINE=InnoDB');
+        $this->behind->exec("INSERT INTO grants VALUES (1, 1, 7, 'admin'), (2, 2, 7, 'read')");
 
         $this->redis = new RedisClient(RedisConfig::fromArray(['host' => Services::redisHost(), 'port' => Services::redisPort(), 'prefix' => 'rowcache-' . uniqid() . ':']));
         [$this->manager, $this->db] = $this->connect($this->redis);
@@ -232,6 +235,20 @@ final class RowCacheTest extends TestCase
         self::assertSame('Hm', $this->db->table('comments')->find(101)['body'] ?? null, 'unrelated children keep their entries');
     }
 
+    public function testCompositeForeignKeyCascades(): void
+    {
+        $scope = fn(int $id): mixed => $this->db->table('grants')->find($id)['scope'] ?? null;
+        self::assertSame('admin', $scope(1));
+        self::assertSame(2, $this->db->table('grants')->find(2)['user_id'] ?? null);
+
+        $this->db->table('memberships')->where('user_id', 2)->where('team_id', 7)->update(['user_id' => 3]);
+        self::assertSame(3, $this->db->table('grants')->find(2)['user_id'] ?? null, 'ON UPDATE CASCADE through a two-column key');
+
+        $this->db->table('memberships')->where('user_id', 1)->where('team_id', 7)->delete();
+        self::assertNull($scope(1), 'ON DELETE CASCADE through a two-column key');
+        self::assertSame('read', $scope(2));
+    }
+
     public function testRawWritesAndOutOfBandChanges(): void
     {
         self::assertSame(0, $this->row(2)['score'] ?? null);
@@ -349,7 +366,7 @@ final class RowCacheTest extends TestCase
         $manager = new DatabaseManager([
             'driver' => 'mariadb', 'host' => Services::dbHost(), 'port' => Services::dbPort(), 'database' => self::DB,
             'username' => Services::dbUser(), 'password' => Services::dbPassword(), 'pool' => ['min' => 0, 'max' => 8],
-            'cache' => ['tables' => ['users', 'posts', 'comments', 'memberships'], 'ttl' => 60, 'strict' => $strict],
+            'cache' => ['tables' => ['users', 'posts', 'comments', 'memberships', 'grants'], 'ttl' => 60, 'strict' => $strict],
         ], null, $redis);
 
         return [$manager, $manager->connection()];

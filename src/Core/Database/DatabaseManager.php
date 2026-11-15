@@ -42,6 +42,25 @@ final class DatabaseManager
      */
     public function __construct(array $section, private readonly ?LoggerInterface $logger = null, private readonly ?RedisClient $redis = null)
     {
+        $this->configs = self::validate($section, $redis !== null);
+        $this->defaultName = isset($this->configs['default']) ? 'default' : (string) array_key_first($this->configs);
+        $this->drivers['mysql'] = new MySqlDriver();
+        $this->drivers['mariadb'] = $this->drivers['mysql'];
+    }
+
+    /**
+     * Validates the `database` section (one connection or named connections) without opening
+     * anything, so configuration errors surface when the application is created.
+     *
+     * @param array<string, mixed> $section
+     *
+     * @return array<string, DatabaseConfig>
+     *
+     * @throws InvalidConfigurationException
+     */
+    public static function validate(array $section, bool $redisAvailable): array
+    {
+        $configs = [];
         $named = $section !== [] && is_array($section[array_key_first($section) ?? ''] ?? null) && !isset($section['driver']) && !isset($section['database']);
         if ($named) {
             foreach ($section as $name => $config) {
@@ -49,19 +68,18 @@ final class DatabaseManager
                     throw InvalidConfigurationException::at('database', 'named connections must be string-keyed arrays');
                 }
                 /** @var array<string, mixed> $config */
-                $this->configs[$name] = DatabaseConfig::fromArray($config, $name);
+                $configs[$name] = DatabaseConfig::fromArray($config, $name);
             }
         } else {
-            $this->configs['default'] = DatabaseConfig::fromArray($section, 'default');
+            $configs['default'] = DatabaseConfig::fromArray($section, 'default');
         }
-        $this->defaultName = isset($this->configs['default']) ? 'default' : (string) array_key_first($this->configs);
-        foreach ($this->configs as $name => $config) {
-            if ($config->cache->enabled && $redis === null) {
+        foreach ($configs as $name => $config) {
+            if ($config->cache->enabled && !$redisAvailable) {
                 throw InvalidConfigurationException::at("database.{$name}.cache", "the row cache needs the 'redis' configuration section");
             }
         }
-        $this->drivers['mysql'] = new MySqlDriver();
-        $this->drivers['mariadb'] = $this->drivers['mysql'];
+
+        return $configs;
     }
 
     public function registerDriver(string $name, DriverInterface $driver): void

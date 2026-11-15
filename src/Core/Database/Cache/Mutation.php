@@ -29,6 +29,7 @@ final readonly class Mutation
      *     the rows are named by their key in the WHERE clause (`pk = ?`, `pk IN (…)`, `a = ? AND b = ?`);
      *     the statement changes at most these rows
      * @param list<string> $updatedColumns columns assigned by an update
+     * @param array<string, mixed> $values assignments of an update (column => value or Expression)
      * @param list<array<string, mixed>> $insertedRows rows of an insert
      * @param (Closure(list<string>): array{string, list<mixed>})|null $selectKeys
      *     builds `SELECT columns … FOR UPDATE` with the statement's WHERE, ORDER BY and LIMIT
@@ -45,6 +46,7 @@ final readonly class Mutation
         public array $insertedRows = [],
         public ?Closure $selectKeys = null,
         public ?Closure $byKeys = null,
+        public array $values = [],
     ) {}
 
     public function isInsert(): bool

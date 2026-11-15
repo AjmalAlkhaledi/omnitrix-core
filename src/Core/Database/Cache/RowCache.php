@@ -14,6 +14,7 @@ use function bin2hex;
 use function count;
 use function explode;
 use function implode;
+use function in_array;
 use function is_array;
 use function is_int;
 use function is_numeric;
@@ -24,6 +25,7 @@ use function random_bytes;
 use function rawurlencode;
 use function sha1;
 use function str_contains;
+use function strlen;
 use function strpos;
 use function substr;
 
@@ -132,6 +134,38 @@ final class RowCache
         redis.call('SET', KEYS[2], version .. '\t' .. epoch .. '\t' .. generation .. '\t' .. ARGV[5], 'EX', ARGV[6])
         redis.call('EXPIRE', KEYS[4], ARGV[7])
         redis.call('EXPIRE', KEYS[1], ARGV[7])
+        return 1
+        LUA;
+
+    private const string FILL_QUERY = <<<'LUA'
+        local function parse(v)
+          if not v then return nil, 0 end
+          local sep = string.find(v, ':', 1, true)
+          return string.sub(v, 1, sep - 1), tonumber(string.sub(v, sep + 1)) or 0
+        end
+        local function current(key, expected, fresh, ttl)
+          local token, pending = parse(redis.call('GET', key))
+          if expected == '' then
+            if token then
+              if token == fresh and pending == 0 then return token end
+              return nil
+            end
+            redis.call('SET', key, fresh .. ':0', 'EX', ttl, 'NX')
+            token, pending = parse(redis.call('GET', key))
+            if token ~= fresh then return nil end
+            return token
+          end
+          if token ~= expected or pending ~= 0 then return nil end
+          return token
+        end
+        local tokens = {}
+        for i = 2, #KEYS do
+          local token = current(KEYS[i], ARGV[2 * i], ARGV[2 * i + 1], ARGV[2])
+          if not token then return 0 end
+          tokens[i - 1] = token
+          redis.call('EXPIRE', KEYS[i], ARGV[2])
+        end
+        redis.call('SET', KEYS[1], table.concat(tokens, ',') .. '\t' .. ARGV[3], 'EX', ARGV[1])
         return 1
         LUA;
 
@@ -263,6 +297,80 @@ final class RowCache
         $this->rotate($versionKeys, release: false);
     }
 
+    /**
+     * Looks up a cached query result. `$dependencies` are the version keys the result depends on
+     * (the table generation, the column key and one tag per filtered value), in a fixed order.
+     *
+     * @param list<string> $dependencies
+     */
+    public function lookupQuery(string $queryKey, array $dependencies): QueryLookup
+    {
+        $values = $this->redis->withConnection(static fn(Redis $r): mixed => $r->mget([$queryKey, ...$dependencies]));
+        $values = is_array($values) ? $values : [];
+        $tokens = [];
+        foreach ($dependencies as $i => $ignored) {
+            $version = self::parseVersion($values[$i + 1] ?? false);
+            if ($version !== null && $version[1] > 0) {
+                return QueryLookup::bypass(); // a writer is changing rows the result may contain
+            }
+            $tokens[] = $version[0] ?? null;
+        }
+        $entry = $values[0] ?? false;
+        if (is_string($entry) && !in_array(null, $tokens, true)) {
+            $parts = explode("\t", $entry, 2);
+            if (count($parts) === 2 && $parts[0] === implode(',', $tokens)) {
+                $rows = self::decodeRows($parts[1]);
+                if ($rows !== null) {
+                    return QueryLookup::hit($rows);
+                }
+            }
+        }
+
+        return QueryLookup::miss($tokens);
+    }
+
+    /**
+     * Stores a query result read after a miss, unless one of its dependencies changed since the
+     * lookup or is being written.
+     *
+     * @param list<string>               $dependencies
+     * @param list<array<string, mixed>> $rows
+     */
+    public function fillQuery(string $queryKey, array $dependencies, QueryLookup $lookup, array $rows, int $ttl): void
+    {
+        if (!$lookup->fillable) {
+            return;
+        }
+        try {
+            $json = json_encode($rows, JSON_THROW_ON_ERROR | JSON_PRESERVE_ZERO_FRACTION | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        } catch (JsonException) {
+            return;
+        }
+        $args = [(string) $ttl, (string) $this->versionTtl(), $json];
+        foreach ($dependencies as $i => $ignored) {
+            $args[] = $lookup->tokens[$i] ?? '';
+            $args[] = self::token();
+        }
+        $this->redis->withConnection(fn(Redis $r): mixed => $this->script($r, self::FILL_QUERY, [$queryKey, ...$dependencies], $args));
+    }
+
+    public function queryKey(string $table, string $hash): string
+    {
+        return $this->tableTag($table) . ':q:' . $hash;
+    }
+
+    /** Version key of "rows whose `$column` compares equal to the value with this tag". */
+    public function tagKey(string $table, string $column, string $tag): string
+    {
+        return $this->tableTag($table) . ':t:' . rawurlencode($column) . '=' . (strlen($tag) > 64 ? sha1($tag) : rawurlencode($tag));
+    }
+
+    /** Version key that every cached query filtering on `$column` depends on. */
+    public function columnKey(string $table, string $column): string
+    {
+        return $this->tableTag($table) . ':c:' . rawurlencode($column);
+    }
+
     /** @param list<int|string> $key */
     public function versionKey(string $table, array $key): string
     {
@@ -277,12 +385,17 @@ final class RowCache
 
     public function epochKey(string $table): string
     {
-        return $this->config->prefix . ':{' . rawurlencode($this->connection) . ':' . rawurlencode($table) . '}:e';
+        return $this->tableTag($table) . ':e';
     }
 
     public function generationKey(string $table): string
     {
-        return $this->config->prefix . ':{' . rawurlencode($this->connection) . ':' . rawurlencode($table) . '}:g';
+        return $this->tableTag($table) . ':g';
+    }
+
+    private function tableTag(string $table): string
+    {
+        return $this->config->prefix . ':{' . rawurlencode($this->connection) . ':' . rawurlencode($table) . '}';
     }
 
     /**
@@ -336,6 +449,32 @@ final class RowCache
         }
 
         return LookupResult::miss($versionToken, $epochToken, $epochFillable, $generationToken);
+    }
+
+    /** @return list<array<string, mixed>>|null */
+    private static function decodeRows(string $json): ?array
+    {
+        try {
+            $rows = json_decode($json, true, 512, JSON_THROW_ON_ERROR);
+        } catch (JsonException) {
+            return null;
+        }
+        if (!is_array($rows)) {
+            return null;
+        }
+        $list = [];
+        foreach ($rows as $row) {
+            if (!is_array($row)) {
+                return null;
+            }
+            $typed = [];
+            foreach ($row as $column => $value) {
+                $typed[(string) $column] = $value;
+            }
+            $list[] = $typed;
+        }
+
+        return $list;
     }
 
     /** @return array<string, mixed>|null */

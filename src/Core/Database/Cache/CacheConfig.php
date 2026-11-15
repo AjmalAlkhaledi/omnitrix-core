@@ -32,10 +32,11 @@ use function preg_match;
  */
 final readonly class CacheConfig
 {
-    private const array KNOWN = ['enabled', 'tables', 'ttl', 'negative', 'negative_ttl', 'lock_ttl', 'strict', 'prefix'];
+    private const array KNOWN = ['enabled', 'tables', 'queries', 'ttl', 'negative', 'negative_ttl', 'lock_ttl', 'strict', 'prefix'];
 
     /**
-     * @param array<string, list<string>|null> $tables table => key columns (null: read from the schema)
+     * @param array<string, list<string>|null> $tables  table => key columns (null: read from the schema)
+     * @param array<string, list<string>>      $queries table => columns that cached queries may depend on
      */
     public function __construct(
         public bool $enabled,
@@ -46,6 +47,7 @@ final readonly class CacheConfig
         public int $lockTtl = 30,
         public bool $strict = false,
         public string $prefix = 'dbc',
+        public array $queries = [],
     ) {}
 
     public static function disabled(): self
@@ -69,10 +71,17 @@ final readonly class CacheConfig
             }
         }
         $tables = self::tables($section['tables'] ?? [], "{$path}.tables");
-        $enabled = self::bool($section, 'enabled', $tables !== [], $path);
+        $queries = [];
+        foreach (self::tables($section['queries'] ?? [], "{$path}.queries") as $table => $columns) {
+            if ($columns === null) {
+                throw InvalidConfigurationException::at("{$path}.queries.{$table}", 'list the columns cached queries may filter on');
+            }
+            $queries[$table] = $columns;
+        }
+        $enabled = self::bool($section, 'enabled', $tables !== [] || $queries !== [], $path);
 
         return new self(
-            enabled: $enabled && $tables !== [],
+            enabled: $enabled && ($tables !== [] || $queries !== []),
             tables: $tables,
             ttl: self::int($section, 'ttl', 300, 1, $path),
             negative: self::bool($section, 'negative', true, $path),
@@ -80,6 +89,7 @@ final readonly class CacheConfig
             lockTtl: self::int($section, 'lock_ttl', 30, 1, $path),
             strict: self::bool($section, 'strict', false, $path),
             prefix: self::prefix($section['prefix'] ?? 'dbc', "{$path}.prefix"),
+            queries: $queries,
         );
     }
 

@@ -133,6 +133,11 @@ final class RowCacheShapesTest extends TestCase
                 return $fallback();
             }
 
+            public function selectCached(string $table, string $sql, array $bindings, array $predicates, int $ttl, Closure $fallback): array
+            {
+                return $fallback();
+            }
+
             public function mutate(Mutation $mutation): int
             {
                 $this->mutations[] = $mutation;
