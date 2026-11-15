@@ -24,6 +24,9 @@ jobs:
           extensions: openswoole-26.2.0, redis, pdo_mysql, mbstring
           tools: composer:v2
           coverage: none
+        env:
+          # Same build options as the documented installation (HTTP/2 and TLS are required).
+          OPENSWOOLE_CONFIGURE_OPTS: --enable-openssl --enable-http2 --enable-hook-curl
 
       - name: Install MariaDB and Redis binaries
         run: |
@@ -68,6 +71,9 @@ jobs:
           extensions: openswoole-26.2.0, redis, pdo_mysql, mbstring
           tools: composer:v2
           coverage: none
+        env:
+          # Same build options as the documented installation (HTTP/2 and TLS are required).
+          OPENSWOOLE_CONFIGURE_OPTS: --enable-openssl --enable-http2 --enable-hook-curl
 
       - name: Install MySQL and Redis binaries
         run: |
@@ -84,7 +90,13 @@ jobs:
       - run: composer install --no-interaction --no-progress
 
       - name: Start test services
-        run: bin/services up
+        run: |
+          if ! bin/services up; then
+            for f in var/mysql/install.log var/mysql/error.log; do
+              [ -f "$f" ] && echo "::error title=$f::$(tail -n 25 "$f" | tr '\n' ' ' | cut -c1-3000)"
+            done
+            exit 1
+          fi
 
       - name: Integration tests
         run: php bin/omnitrix-phpunit --testsuite integration
