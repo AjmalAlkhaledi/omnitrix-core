@@ -542,10 +542,12 @@ final class Application
             $httpClient->close();
         }, 100);
 
+        $redisClient = null;
         $redis = $config['redis'] ?? null;
         if (is_array($redis)) {
             /** @var array<string, mixed> $redis */
             $client = new RedisClient(RedisConfig::fromArray($redis));
+            $redisClient = $client;
             $container->instance(RedisClient::class, $client);
             $resources->register('redis', static function () use ($client): void {
                 $client->close();
@@ -566,7 +568,7 @@ final class Application
         $database = $config['database'] ?? null;
         if (is_array($database) && $database !== []) {
             /** @var array<string, mixed> $database */
-            $manager = new DatabaseManager($database, $this->runtime->logger());
+            $manager = new DatabaseManager($database, $this->runtime->logger(), $redisClient);
             $container->instance(DatabaseManager::class, $manager);
             $resources->register('database', static function () use ($manager): void {
                 $manager->close();

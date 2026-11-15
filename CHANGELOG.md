@@ -4,6 +4,23 @@ All notable changes to this project are documented in this file. The format foll
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- Primary-key row cache for MySQL/MariaDB (`cache` option of a database connection, stored in
+  Redis). Lookups by key — `find()`, `findMany()`, `where('id', …)->first()`, `whereIn('id', …)` and
+  `belongsTo` relations — are served from it; every insert, update and delete invalidates exactly
+  the affected primary keys, including rows changed by `ON DELETE/UPDATE CASCADE | SET NULL`
+  foreign keys, with no application code. Rows are marked before a write and refreshed after the
+  outermost transaction ends, so no reader is served a value older than a committed write.
+  Absent rows are cached until an insert into the table; schema changes retire a table's
+  entries.
+- `afterCommit()` on connections and the `DB` facade, with nested-transaction semantics.
+- `DB::writing()` for raw SQL writes to cached tables, `DB::invalidate()` for rows changed
+  outside the application and `Database::flushCache()` for table-level changes.
+- Cache statistics per connection (`Database::cacheStats()`): hits, misses, bypassed reads, errors.
+
 ## [0.1.1] - 2026-11-14
 
 ### Added

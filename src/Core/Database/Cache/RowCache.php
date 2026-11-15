@@ -1,0 +1,406 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Omnitrix\Core\Database\Cache;
+
+use JsonException;
+use Omnitrix\Core\Redis\RedisClient;
+use Redis;
+
+use function array_map;
+use function array_merge;
+use function bin2hex;
+use function count;
+use function explode;
+use function implode;
+use function is_array;
+use function is_int;
+use function is_numeric;
+use function is_string;
+use function json_decode;
+use function json_encode;
+use function random_bytes;
+use function rawurlencode;
+use function sha1;
+use function str_contains;
+use function strpos;
+use function substr;
+
+use const JSON_PRESERVE_ZERO_FRACTION;
+use const JSON_THROW_ON_ERROR;
+use const JSON_UNESCAPED_SLASHES;
+use const JSON_UNESCAPED_UNICODE;
+
+/**
+ * Redis side of the primary-key row cache.
+ *
+ * Every cached row has two keys sharing a hash tag:
+ *
+ * - `{prefix}:{conn:table:pk}:v` — the row's version: a random token and the number of writers
+ *   currently changing the row (`token:pending`);
+ * - `{prefix}:{conn:table:pk}:r` — the cached row, stored with the tokens it was read under
+ *   (`token\tepoch\tgeneration\tjson`).
+ *
+ * Each table also has an insert epoch (`{prefix}:{conn:table}:e`, same format) that validates
+ * cached "row does not exist" entries, because inserts with generated keys cannot say in advance
+ * which keys they create, and a generation (`{prefix}:{conn:table}:g`) that every entry of the
+ * table depends on; it changes only when the table itself changes (created, dropped, altered,
+ * truncated), never for row writes.
+ *
+ * Protocol:
+ *
+ * - **read** (one MGET): an entry is served only when its token equals the current version token
+ *   and no writer is pending (for absent rows also the epoch token, with no insert pending);
+ * - **mark** (before a write statement): increments the pending count of each affected version;
+ *   readers then bypass the cache and read the database;
+ * - **publish** (after commit or rollback): installs a fresh random token and decrements the
+ *   pending count, so every entry filled before or during the write becomes unreachable;
+ * - **fill** (after a miss, Lua): stores the row only if the version is still the one observed
+ *   before the database read and no writer is pending, so a slow reader can never store data
+ *   that is older than a committed write.
+ *
+ * Versions expire (`lockTtl` while a writer is pending, a multiple of the entry TTL otherwise);
+ * because tokens are random, an expired version can never revalidate an old entry.
+ *
+ * @internal used by the database layer
+ */
+final class RowCache
+{
+    private const string MARK = <<<'LUA'
+        for i, key in ipairs(KEYS) do
+          local cur = redis.call('GET', key)
+          local token, pending = ARGV[i + 1], 0
+          if cur then
+            local sep = string.find(cur, ':', 1, true)
+            token = string.sub(cur, 1, sep - 1)
+            pending = tonumber(string.sub(cur, sep + 1)) or 0
+          end
+          redis.call('SET', key, token .. ':' .. (pending + 1), 'EX', ARGV[1])
+        end
+        return #KEYS
+        LUA;
+
+    private const string PUBLISH = <<<'LUA'
+        for i, key in ipairs(KEYS) do
+          local cur = redis.call('GET', key)
+          local pending = 0
+          if cur then
+            local sep = string.find(cur, ':', 1, true)
+            pending = tonumber(string.sub(cur, sep + 1)) or 0
+          end
+          if ARGV[1] == '1' then pending = pending - 1 end
+          if pending < 0 then pending = 0 end
+          local ttl = ARGV[3]
+          if pending > 0 then ttl = ARGV[2] end
+          redis.call('SET', key, ARGV[i + 3] .. ':' .. pending, 'EX', ttl)
+        end
+        return #KEYS
+        LUA;
+
+    private const string FILL = <<<'LUA'
+        local function parse(v)
+          if not v then return nil, 0 end
+          local sep = string.find(v, ':', 1, true)
+          return string.sub(v, 1, sep - 1), tonumber(string.sub(v, sep + 1)) or 0
+        end
+        local function current(key, expected, fresh, ttl)
+          local token, pending = parse(redis.call('GET', key))
+          if expected == '' then
+            -- missing when looked up: create it (another fill of the same batch may have just done so)
+            if token then
+              if token == fresh and pending == 0 then return token end
+              return nil
+            end
+            redis.call('SET', key, fresh .. ':0', 'EX', ttl, 'NX')
+            token, pending = parse(redis.call('GET', key))
+            if token ~= fresh then return nil end
+            return token
+          end
+          if token ~= expected or pending ~= 0 then return nil end
+          return token
+        end
+        local version = current(KEYS[1], ARGV[1], ARGV[2], ARGV[7])
+        if not version then return 0 end
+        local epoch = '-'
+        if ARGV[3] ~= '-' then
+          epoch = current(KEYS[3], ARGV[3], ARGV[4], ARGV[7])
+          if not epoch then return 0 end
+        end
+        local generation = current(KEYS[4], ARGV[8], ARGV[9], ARGV[7])
+        if not generation then return 0 end
+        redis.call('SET', KEYS[2], version .. '\t' .. epoch .. '\t' .. generation .. '\t' .. ARGV[5], 'EX', ARGV[6])
+        redis.call('EXPIRE', KEYS[4], ARGV[7])
+        redis.call('EXPIRE', KEYS[1], ARGV[7])
+        return 1
+        LUA;
+
+    /** @var array<string, string> script => sha1 */
+    private array $shas = [];
+
+    public function __construct(
+        private readonly RedisClient $redis,
+        public readonly CacheConfig $config,
+        private readonly string $connection,
+    ) {}
+
+    /**
+     * Looks up rows by key. One round trip regardless of the number of keys.
+     *
+     * @param list<list<int|string>> $keys key tuples in the table's key column order
+     *
+     * @return list<LookupResult> one result per key, same order
+     */
+    public function lookup(string $table, array $keys): array
+    {
+        if ($keys === []) {
+            return [];
+        }
+        $redisKeys = [];
+        foreach ($keys as $key) {
+            $redisKeys[] = $this->versionKey($table, $key);
+            $redisKeys[] = $this->rowKey($table, $key);
+        }
+        $redisKeys[] = $this->epochKey($table);
+        $redisKeys[] = $this->generationKey($table);
+        $values = $this->redis->withConnection(static fn(Redis $r): mixed => $r->mget($redisKeys));
+        $values = is_array($values) ? $values : [];
+        $epoch = self::parseVersion($values[count($redisKeys) - 2] ?? false);
+        $generation = self::parseVersion($values[count($redisKeys) - 1] ?? false);
+        $results = [];
+        foreach ($keys as $i => $key) {
+            $results[] = $this->evaluate(self::parseVersion($values[2 * $i] ?? false), $values[2 * $i + 1] ?? false, $epoch, $generation);
+        }
+
+        return $results;
+    }
+
+    /**
+     * Stores rows that were read from the database after a miss. Entries whose version changed
+     * since the lookup, or that a writer is changing, are skipped. Absent rows are stored only when
+     * negative caching is enabled.
+     *
+     * @param list<array{key: list<int|string>, row: array<string, mixed>|null, lookup: LookupResult}> $fills
+     */
+    public function fill(string $table, array $fills): void
+    {
+        $commands = [];
+        // Table-wide keys (insert epoch, generation) get one fresh token per batch, so every fill of
+        // the batch agrees on the value the first one creates.
+        $epochToken = self::token();
+        $generationToken = self::token();
+        foreach ($fills as $fill) {
+            $lookup = $fill['lookup'];
+            if (!$lookup->fillable) {
+                continue;
+            }
+            $negative = $fill['row'] === null;
+            if ($negative && !$this->config->negative) {
+                continue;
+            }
+            try {
+                $json = json_encode($fill['row'], JSON_THROW_ON_ERROR | JSON_PRESERVE_ZERO_FRACTION | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+            } catch (JsonException) {
+                continue; // binary column values that are not valid UTF-8 are not cached
+            }
+            $ttl = $negative ? $this->config->negativeTtl : $this->config->ttl;
+            $commands[] = [
+                [$this->versionKey($table, $fill['key']), $this->rowKey($table, $fill['key']), $this->epochKey($table), $this->generationKey($table)],
+                [
+                    $lookup->versionToken ?? '', self::token(),
+                    $negative ? ($lookup->epochToken ?? '') : '-', $epochToken,
+                    $json, (string) $ttl, (string) $this->versionTtl(),
+                    $lookup->generationToken ?? '', $generationToken,
+                ],
+            ];
+        }
+        if ($commands === []) {
+            return;
+        }
+        $this->redis->withConnection(function (Redis $r) use ($commands): void {
+            foreach ($commands as [$keys, $args]) {
+                $this->script($r, self::FILL, $keys, $args);
+            }
+        });
+    }
+
+    /**
+     * Marks rows (and, for inserts, the table epoch) as being written: until {@see publish()}
+     * readers bypass the cache for them.
+     *
+     * @param list<string> $versionKeys
+     */
+    public function mark(array $versionKeys): void
+    {
+        if ($versionKeys === []) {
+            return;
+        }
+        $args = [(string) $this->config->lockTtl];
+        foreach ($versionKeys as $ignored) {
+            $args[] = self::token();
+        }
+        $this->redis->withConnection(fn(Redis $r): mixed => $this->script($r, self::MARK, $versionKeys, $args));
+    }
+
+    /**
+     * Ends a write started with {@see mark()}: installs fresh tokens and releases the marks.
+     *
+     * @param list<string> $versionKeys
+     */
+    public function publish(array $versionKeys): void
+    {
+        $this->rotate($versionKeys, release: true);
+    }
+
+    /**
+     * Invalidates rows changed outside the database layer (another application, a trigger, a
+     * manual fix): installs fresh tokens without touching pending marks.
+     *
+     * @param list<string> $versionKeys
+     */
+    public function invalidate(array $versionKeys): void
+    {
+        $this->rotate($versionKeys, release: false);
+    }
+
+    /** @param list<int|string> $key */
+    public function versionKey(string $table, array $key): string
+    {
+        return $this->tag($table, $key) . ':v';
+    }
+
+    /** @param list<int|string> $key */
+    public function rowKey(string $table, array $key): string
+    {
+        return $this->tag($table, $key) . ':r';
+    }
+
+    public function epochKey(string $table): string
+    {
+        return $this->config->prefix . ':{' . rawurlencode($this->connection) . ':' . rawurlencode($table) . '}:e';
+    }
+
+    public function generationKey(string $table): string
+    {
+        return $this->config->prefix . ':{' . rawurlencode($this->connection) . ':' . rawurlencode($table) . '}:g';
+    }
+
+    /**
+     * Retires every cached entry of the table at once (after the table was created, dropped,
+     * altered or truncated). Row writes never need this.
+     */
+    public function flush(string $table): void
+    {
+        $this->rotate([$this->generationKey($table), $this->epochKey($table)], release: false);
+    }
+
+    /** @param list<string> $versionKeys */
+    private function rotate(array $versionKeys, bool $release): void
+    {
+        if ($versionKeys === []) {
+            return;
+        }
+        $args = [$release ? '1' : '0', (string) $this->config->lockTtl, (string) $this->versionTtl()];
+        foreach ($versionKeys as $ignored) {
+            $args[] = self::token();
+        }
+        $this->redis->withConnection(fn(Redis $r): mixed => $this->script($r, self::PUBLISH, $versionKeys, $args));
+    }
+
+    /**
+     * @param array{string, int}|null $version
+     * @param array{string, int}|null $epoch
+     * @param array{string, int}|null $generation
+     */
+    private function evaluate(?array $version, mixed $entry, ?array $epoch, ?array $generation): LookupResult
+    {
+        if ($version !== null && $version[1] > 0) {
+            return LookupResult::bypass(); // a writer is changing the row
+        }
+        $versionToken = $version[0] ?? null;
+        $epochToken = $epoch !== null && $epoch[1] === 0 ? $epoch[0] : null;
+        $epochFillable = $epoch === null || $epoch[1] === 0;
+        $generationToken = $generation[0] ?? null;
+        if ($versionToken !== null && $generationToken !== null && is_string($entry)) {
+            $parts = explode("\t", $entry, 4);
+            if (count($parts) === 4 && $parts[0] === $versionToken && $parts[2] === $generationToken) {
+                if ($parts[3] !== 'null') {
+                    $row = self::decodeRow($parts[3]);
+                    if ($row !== null) {
+                        return LookupResult::hit($row);
+                    }
+                } elseif ($epochToken !== null && $parts[1] === $epochToken) {
+                    return LookupResult::absent();
+                }
+            }
+        }
+
+        return LookupResult::miss($versionToken, $epochToken, $epochFillable, $generationToken);
+    }
+
+    /** @return array<string, mixed>|null */
+    private static function decodeRow(string $json): ?array
+    {
+        try {
+            $row = json_decode($json, true, 512, JSON_THROW_ON_ERROR);
+        } catch (JsonException) {
+            return null;
+        }
+        if (!is_array($row)) {
+            return null;
+        }
+        $typed = [];
+        foreach ($row as $column => $value) {
+            $typed[(string) $column] = $value;
+        }
+
+        return $typed;
+    }
+
+    /** @return array{string, int}|null */
+    private static function parseVersion(mixed $value): ?array
+    {
+        if (!is_string($value) || !str_contains($value, ':')) {
+            return null;
+        }
+        $sep = (int) strpos($value, ':');
+        $pending = substr($value, $sep + 1);
+
+        return [substr($value, 0, $sep), is_numeric($pending) ? (int) $pending : 0];
+    }
+
+    /**
+     * @param list<string> $keys
+     * @param list<string> $args
+     */
+    private function script(Redis $redis, string $script, array $keys, array $args): mixed
+    {
+        $sha = $this->shas[$script] ??= sha1($script);
+        $result = $redis->evalsha($sha, array_merge($keys, $args), count($keys));
+        $error = $redis->getLastError();
+        if ($result === false && is_string($error) && str_contains($error, 'NOSCRIPT')) {
+            // First use on this server (or after SCRIPT FLUSH): send the script itself.
+            $redis->clearLastError();
+            $result = $redis->eval($script, array_merge($keys, $args), count($keys));
+        }
+
+        return $result;
+    }
+
+    /** @param list<int|string> $key */
+    private function tag(string $table, array $key): string
+    {
+        return $this->config->prefix . ':{' . rawurlencode($this->connection) . ':' . rawurlencode($table) . ':'
+            . implode(',', array_map(static fn(int|string $v): string => rawurlencode(is_int($v) ? (string) $v : $v), $key)) . '}';
+    }
+
+    private function versionTtl(): int
+    {
+        return 2 * $this->config->ttl;
+    }
+
+    private static function token(): string
+    {
+        return bin2hex(random_bytes(8));
+    }
+}

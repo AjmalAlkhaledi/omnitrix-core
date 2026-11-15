@@ -9,6 +9,7 @@ use Omnitrix\Core\Database\Contracts\DriverInterface;
 use Omnitrix\Core\Database\Driver\MySQL\MySqlDriver;
 use Omnitrix\Core\Database\Exception\DatabaseException;
 use Omnitrix\Core\Database\Query\Builder;
+use Omnitrix\Core\Redis\RedisClient;
 use Omnitrix\Core\Runtime\Config\InvalidConfigurationException;
 use Psr\Log\LoggerInterface;
 
@@ -35,8 +36,11 @@ final class DatabaseManager
 
     private readonly string $defaultName;
 
-    /** @param array<string, mixed> $section */
-    public function __construct(array $section, private readonly ?LoggerInterface $logger = null)
+    /**
+     * @param array<string, mixed> $section
+     * @param RedisClient|null     $redis   required when a connection enables the row cache (`cache` option)
+     */
+    public function __construct(array $section, private readonly ?LoggerInterface $logger = null, private readonly ?RedisClient $redis = null)
     {
         $named = $section !== [] && is_array($section[array_key_first($section) ?? ''] ?? null) && !isset($section['driver']) && !isset($section['database']);
         if ($named) {
@@ -51,6 +55,11 @@ final class DatabaseManager
             $this->configs['default'] = DatabaseConfig::fromArray($section, 'default');
         }
         $this->defaultName = isset($this->configs['default']) ? 'default' : (string) array_key_first($this->configs);
+        foreach ($this->configs as $name => $config) {
+            if ($config->cache->enabled && $redis === null) {
+                throw InvalidConfigurationException::at("database.{$name}.cache", "the row cache needs the 'redis' configuration section");
+            }
+        }
         $this->drivers['mysql'] = new MySqlDriver();
         $this->drivers['mariadb'] = $this->drivers['mysql'];
     }
@@ -66,7 +75,7 @@ final class DatabaseManager
         if (!isset($this->databases[$name])) {
             $config = $this->configs[$name] ?? throw new DatabaseException("Unknown database connection '{$name}'");
             $driver = $this->drivers[$config->driver] ?? throw new DatabaseException("No driver registered for '{$config->driver}'");
-            $this->databases[$name] = new Database($config, $driver, $this->logger);
+            $this->databases[$name] = new Database($config, $driver, $this->logger, $this->redis);
         }
 
         return $this->databases[$name];

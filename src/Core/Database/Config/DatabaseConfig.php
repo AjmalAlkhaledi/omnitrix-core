@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Omnitrix\Core\Database\Config;
 
+use Omnitrix\Core\Database\Cache\CacheConfig;
 use Omnitrix\Core\Runtime\Config\InvalidConfigurationException;
 
 use function array_keys;
@@ -18,7 +19,7 @@ use function is_string;
 /** Validated settings of one named database connection (the `database` config section). */
 final readonly class DatabaseConfig
 {
-    private const array KNOWN = ['driver', 'host', 'port', 'unix_socket', 'database', 'username', 'password', 'charset', 'collation', 'timezone', 'options', 'pool', 'connect_timeout', 'statement_timeout', 'strict'];
+    private const array KNOWN = ['driver', 'host', 'port', 'unix_socket', 'database', 'username', 'password', 'charset', 'collation', 'timezone', 'options', 'pool', 'connect_timeout', 'statement_timeout', 'strict', 'cache'];
 
     private const array KNOWN_POOL = ['min', 'max', 'acquire_timeout', 'idle_timeout', 'max_lifetime', 'validation_interval', 'eviction_interval'];
 
@@ -40,6 +41,7 @@ final readonly class DatabaseConfig
         public float $statementTimeout,
         public bool $strict,
         public PoolConfig $pool,
+        public CacheConfig $cache,
     ) {}
 
     /**
@@ -120,6 +122,7 @@ final readonly class DatabaseConfig
             statementTimeout: self::float($config, 'statement_timeout', 30.0, 0.0, 86400.0, $path),
             strict: self::bool($config, 'strict', true, $path),
             pool: $pool,
+            cache: CacheConfig::fromArray($config['cache'] ?? null, $name),
         );
     }
 

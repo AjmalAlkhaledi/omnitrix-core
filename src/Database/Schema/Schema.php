@@ -45,16 +45,19 @@ final class Schema
     public function drop(string $table): void
     {
         $this->db->execute($this->grammar->compileDrop($table, ifExists: false));
+        $this->db->flushCache($table);
     }
 
     public function dropIfExists(string $table): void
     {
         $this->db->execute($this->grammar->compileDrop($table, ifExists: true));
+        $this->db->flushCache($table);
     }
 
     public function rename(string $from, string $to): void
     {
         $this->db->execute($this->grammar->compileRename($from, $to));
+        $this->db->flushCache($from, $to);
     }
 
     public function hasTable(string $table): bool
@@ -100,6 +103,7 @@ final class Schema
             }
         } finally {
             $connection->release();
+            $this->db->flushCache(...$tables);
         }
     }
 
@@ -114,5 +118,7 @@ final class Schema
         foreach ($this->grammar->compile($blueprint) as $sql) {
             $this->db->execute($sql);
         }
+        // Rows cached for an earlier table of the same name, or before columns changed, are retired.
+        $this->db->flushCache($blueprint->table);
     }
 }

@@ -6,6 +6,7 @@ namespace Omnitrix\Core\Database\Query;
 
 use Closure;
 use InvalidArgumentException;
+use Omnitrix\Core\Database\Cache\Mutation;
 use Omnitrix\Core\Database\Contracts\GrammarInterface;
 
 use function array_fill;
@@ -22,7 +23,10 @@ use function is_array;
 use function is_float;
 use function is_int;
 use function is_string;
+use function str_replace;
+use function strrpos;
 use function strtolower;
+use function substr;
 use function trim;
 
 /**
@@ -364,6 +368,15 @@ final class Builder
     /** @return list<array<string, mixed>> */
     public function get(): array
     {
+        if ($this->executor instanceof CacheAwareExecutorInterface && $this->from !== null) {
+            $lookup = $this->readKeyLookup();
+            if ($lookup !== null) {
+                $executor = $this->executor;
+
+                return $executor->selectByKeys($this->from, $lookup['columns'], $lookup['keys'], fn(): array => $executor->select($this->toSql(), $this->getBindings()));
+            }
+        }
+
         return $this->executor->select($this->toSql(), $this->getBindings());
     }
 
@@ -450,6 +463,9 @@ final class Builder
     {
         $rows = $this->normaliseRows($values);
         [$sql, $bindings] = $this->compileInsert($rows);
+        if ($this->executor instanceof CacheAwareExecutorInterface) {
+            return $this->executor->mutate(new Mutation($this->table(), Mutation::INSERT, $sql, $bindings, insertedRows: $rows));
+        }
 
         return $this->executor->execute($sql, $bindings);
     }
@@ -457,7 +473,11 @@ final class Builder
     /** @param array<string, mixed> $values */
     public function insertGetId(array $values): int
     {
-        [$sql, $bindings] = $this->compileInsert($this->normaliseRows($values));
+        $rows = $this->normaliseRows($values);
+        [$sql, $bindings] = $this->compileInsert($rows);
+        if ($this->executor instanceof CacheAwareExecutorInterface) {
+            return $this->executor->mutate(new Mutation($this->table(), Mutation::INSERT_GET_ID, $sql, $bindings, insertedRows: $rows));
+        }
 
         return $this->executor->insert($sql, $bindings);
     }
@@ -479,11 +499,25 @@ final class Builder
                 $bindings[] = $value;
             }
         }
-        $sql = 'update ' . $this->grammar->wrapTable($this->table()) . ' set ' . implode(', ', $sets) . $this->compileWheres();
+        $head = 'update ' . $this->grammar->wrapTable($this->table()) . ' set ' . implode(', ', $sets);
+        $sql = $head . $this->compileWheres();
         $sql .= $this->orders !== [] ? ' order by ' . implode(', ', array_map(fn(array $o): string => $this->wrapColumn($o['column']) . ' ' . $o['direction'], $this->orders)) : '';
         $sql .= $this->limit !== null ? ' limit ' . $this->limit : '';
+        $allBindings = array_merge($bindings, $this->bindings['where']);
+        if ($this->executor instanceof CacheAwareExecutorInterface) {
+            return $this->executor->mutate(new Mutation(
+                $this->table(),
+                Mutation::UPDATE,
+                $sql,
+                $allBindings,
+                keyLookup: $this->writeKeyLookup(),
+                updatedColumns: array_map(static fn(int|string $c): string => (string) $c, array_keys($values)),
+                selectKeys: $this->keySelector(),
+                byKeys: fn(array $columns, array $keys): array => [$head . ' where ' . $this->compileKeyCondition($columns, $keys), array_merge($bindings, self::flatten($keys))],
+            ));
+        }
 
-        return $this->executor->execute($sql, array_merge($bindings, $this->bindings['where']));
+        return $this->executor->execute($sql, $allBindings);
     }
 
     /** @param array<string, mixed> $extra */
@@ -503,10 +537,160 @@ final class Builder
         if ($this->wheres === []) {
             throw new InvalidArgumentException('delete() without where(): use truncate or whereRaw("1 = 1") explicitly');
         }
-        $sql = 'delete from ' . $this->grammar->wrapTable($this->table()) . $this->compileWheres();
+        $head = 'delete from ' . $this->grammar->wrapTable($this->table());
+        $sql = $head . $this->compileWheres();
         $sql .= $this->limit !== null ? ' limit ' . $this->limit : '';
+        if ($this->executor instanceof CacheAwareExecutorInterface) {
+            return $this->executor->mutate(new Mutation(
+                $this->table(),
+                Mutation::DELETE,
+                $sql,
+                $this->bindings['where'],
+                keyLookup: $this->writeKeyLookup(),
+                selectKeys: $this->keySelector(),
+                byKeys: fn(array $columns, array $keys): array => [$head . ' where ' . $this->compileKeyCondition($columns, $keys), self::flatten($keys)],
+            ));
+        }
 
         return $this->executor->execute($sql, $this->bindings['where']);
+    }
+
+    // --- primary-key shapes (row cache) ------------------------------------------------------
+
+    /**
+     * Key columns and key tuples when this query is a plain lookup by key: `SELECT *` with only
+     * `col = ?` conditions (one key, composite keys allowed) or a single `col IN (…)`, joined
+     * with AND, no joins, grouping, ordering, offset or locking, and LIMIT only for a single key.
+     *
+     * @internal used by the row cache
+     *
+     * @return array{columns: list<string>, keys: list<list<int|string>>}|null
+     */
+    public function readKeyLookup(): ?array
+    {
+        if ($this->columns !== ['*'] || $this->distinct || $this->joins !== [] || $this->groups !== [] || $this->havings !== []
+            || $this->orders !== [] || $this->offset !== null || $this->lockForUpdate || $this->bindings['select'] !== []) {
+            return null;
+        }
+        $lookup = $this->writeKeyLookup();
+        if ($lookup === null || ($this->limit !== null && ($this->limit < 1 || count($lookup['keys']) !== 1))) {
+            return null;
+        }
+
+        return $lookup;
+    }
+
+    /**
+     * Like {@see readKeyLookup()} for writes: only the WHERE clause matters, because ORDER BY and
+     * LIMIT can only narrow the named rows.
+     *
+     * @internal used by the row cache
+     *
+     * @return array{columns: list<string>, keys: list<list<int|string>>}|null
+     */
+    public function writeKeyLookup(): ?array
+    {
+        if ($this->from === null || $this->wheres === []) {
+            return null;
+        }
+        foreach ($this->wheres as $i => $where) {
+            if ($i > 0 && $where->boolean !== 'and') {
+                return null;
+            }
+        }
+        $values = $this->bindings['where'];
+        if (count($this->wheres) === 1 && $this->wheres[0]->type === 'in' && !$this->wheres[0]->not) {
+            $column = $this->keyColumn($this->wheres[0]->column);
+            if ($column === null) {
+                return null;
+            }
+            $keys = [];
+            foreach ($values as $value) {
+                if (!is_int($value) && !is_string($value)) {
+                    return null;
+                }
+                $keys[] = [$value];
+            }
+
+            return ['columns' => [$column], 'keys' => $keys];
+        }
+        $columns = [];
+        $tuple = [];
+        foreach ($this->wheres as $i => $where) {
+            $column = $where->type === 'basic' && $where->operator === '=' ? $this->keyColumn($where->column) : null;
+            $value = $values[$i] ?? null;
+            if ($column === null || in_array($column, $columns, true) || (!is_int($value) && !is_string($value))) {
+                return null;
+            }
+            $columns[] = $column;
+            $tuple[] = $value;
+        }
+
+        return ['columns' => $columns, 'keys' => [$tuple]];
+    }
+
+    /** `id`, `users.id` or `` `users`.`id` `` on this table → `id`; anything else → null. */
+    private function keyColumn(string $column): ?string
+    {
+        $column = str_replace('`', '', trim($column));
+        $dot = strrpos($column, '.');
+        if ($dot === false) {
+            return $column;
+        }
+
+        return substr($column, 0, $dot) === $this->from ? substr($column, $dot + 1) : null;
+    }
+
+    /** @return Closure(list<string>): array{string, list<mixed>} */
+    private function keySelector(): Closure
+    {
+        return function (array $columns): array {
+            $wrapped = [];
+            foreach ($columns as $column) {
+                $wrapped[] = $this->grammar->wrap(is_string($column) ? $column : "");
+            }
+            $sql = 'select ' . implode(', ', $wrapped)
+                . ' from ' . $this->grammar->wrapTable($this->table()) . $this->compileWheres();
+            if ($this->orders !== []) {
+                $sql .= ' order by ' . implode(', ', array_map(fn(array $o): string => $this->wrapColumn($o['column']) . ' ' . $o['direction'], $this->orders));
+            }
+            $sql .= $this->limit !== null ? ' limit ' . $this->limit : '';
+
+            return [$sql . ' for update', $this->bindings['where']];
+        };
+    }
+
+    /**
+     * `col IN (?, …)` for one key column, `(a = ? and b = ?) or (…)` for composite keys.
+     *
+     * @param list<string>           $columns
+     * @param list<list<int|string>> $keys
+     */
+    public function compileKeyCondition(array $columns, array $keys): string
+    {
+        if (count($columns) === 1) {
+            return $this->grammar->wrap($columns[0]) . ' in (' . implode(', ', array_fill(0, count($keys), '?')) . ')';
+        }
+        $tuple = '(' . implode(' and ', array_map(fn(string $c): string => $this->grammar->wrap($c) . ' = ?', $columns)) . ')';
+
+        return implode(' or ', array_fill(0, count($keys), $tuple));
+    }
+
+    /**
+     * @param list<list<int|string>> $keys
+     *
+     * @return list<int|string>
+     */
+    private static function flatten(array $keys): array
+    {
+        $flat = [];
+        foreach ($keys as $tuple) {
+            foreach ($tuple as $value) {
+                $flat[] = $value;
+            }
+        }
+
+        return $flat;
     }
 
     // --- internals --------------------------------------------------------------------------

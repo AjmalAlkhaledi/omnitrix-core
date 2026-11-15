@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Omnitrix\Core\Database\Transaction;
 
+use Closure;
 use Omnitrix\Core\Database\Exception\DeadlockException;
 use Omnitrix\Core\Database\Exception\TransactionException;
 use Omnitrix\Core\Database\Pool\ConnectionPool;
@@ -12,7 +13,9 @@ use Omnitrix\Core\Runtime\Coroutine\Sleep;
 use OpenSwoole\Coroutine;
 use Throwable;
 
-use function max;
+use function array_merge;
+use function array_pop;
+use function count;
 use function min;
 use function random_int;
 
@@ -24,14 +27,79 @@ use function random_int;
  * runs the callback, commits, and releases. Any throwable rolls back and is rethrown.
  * Deadlocks (`DeadlockException`) are retried up to `$attempts` with a short jittered backoff.
  * Nested calls reuse the pinned connection through savepoints.
+ *
+ * Callbacks registered with {@see afterCommit()} run once the outermost transaction committed:
+ * a nested transaction's callbacks join its parent when it succeeds and are discarded when it
+ * rolls back; a rolled back outer transaction (or a retried attempt) discards them all. Row-cache
+ * marks recorded with {@see remember()} are released when the outermost transaction ends,
+ * whether it committed or rolled back.
  */
 final class TransactionManager
 {
     private const string PIN_KEY = 'db.transaction.';
 
-    private int $depth = 0;
+    private const string FRAMES_KEY = 'db.transaction.frames.';
 
-    public function __construct(private readonly string $connectionName) {}
+    private const string MARKS_KEY = 'db.transaction.marks.';
+
+    /** @var (Closure(list<string>): void)|null */
+    private ?Closure $onEnd;
+
+    /**
+     * @param (Closure(list<string>): void)|null $onEnd receives the row-cache keys recorded during the
+     *                                                    transaction when the outermost transaction ends
+     */
+    public function __construct(private readonly string $connectionName, ?Closure $onEnd = null)
+    {
+        $this->onEnd = $onEnd;
+    }
+
+    public function inTransaction(): bool
+    {
+        return $this->pinned() !== null;
+    }
+
+    /**
+     * Runs `$callback` after the outermost transaction of this coroutine commits. Returns false
+     * (and does not keep the callback) when no transaction is active.
+     */
+    public function afterCommit(callable $callback): bool
+    {
+        $storage = Coroutine::getContext();
+        $key = self::FRAMES_KEY . $this->connectionName;
+        if ($storage === null || $this->pinned() === null || !isset($storage[$key])) {
+            return false;
+        }
+        /** @var list<list<callable>> $frames */
+        $frames = $storage[$key];
+        $frames[count($frames) - 1][] = $callback;
+        $storage[$key] = $frames;
+
+        return true;
+    }
+
+    /**
+     * Records row-cache keys marked by a write inside the transaction, to be released when the
+     * outermost transaction ends. Returns false when no transaction is active.
+     *
+     * @param list<string> $keys
+     */
+    public function remember(array $keys): bool
+    {
+        $storage = Coroutine::getContext();
+        $key = self::MARKS_KEY . $this->connectionName;
+        if ($storage === null || $this->pinned() === null || !isset($storage[$key])) {
+            return false;
+        }
+        /** @var list<string> $marks */
+        $marks = $storage[$key];
+        foreach ($keys as $mark) {
+            $marks[] = $mark;
+        }
+        $storage[$key] = $marks;
+
+        return true;
+    }
 
     /**
      * @template T
@@ -51,11 +119,14 @@ final class TransactionManager
         for ($attempt = 1; ; $attempt++) {
             $connection = $pool->acquire($acquireTimeout);
             $this->pin($connection);
+            $this->begin();
+            $committed = false;
             try {
                 $connection->beginTransaction();
                 try {
                     $result = $callback($connection);
                     $connection->commit();
+                    $committed = true;
 
                     return $result;
                 } catch (Throwable $e) {
@@ -76,8 +147,15 @@ final class TransactionManager
                     throw $e;
                 }
             } finally {
+                [$callbacks, $marks] = $this->end();
                 $this->unpin();
                 $connection?->release();
+                if ($marks !== [] && $this->onEnd !== null) {
+                    ($this->onEnd)($marks);
+                }
+                if ($committed) {
+                    $this->runCallbacks($callbacks);
+                }
             }
         }
     }
@@ -106,12 +184,21 @@ final class TransactionManager
      */
     private function nested(PooledConnection $connection, callable $callback): mixed
     {
-        $this->depth++;
-        $savepoint = 'omnitrix_sp_' . max(1, $this->depth);
+        $storage = Coroutine::getContext();
+        $key = self::FRAMES_KEY . $this->connectionName;
+        /** @var list<list<callable>> $frames */
+        $frames = $storage !== null && isset($storage[$key]) ? $storage[$key] : [[]];
+        $savepoint = 'omnitrix_sp_' . count($frames);
+        $frames[] = [];
+        if ($storage !== null) {
+            $storage[$key] = $frames;
+        }
         $connection->execute('SAVEPOINT ' . $savepoint);
+        $released = false;
         try {
             $result = $callback($connection);
             $connection->execute('RELEASE SAVEPOINT ' . $savepoint);
+            $released = true;
 
             return $result;
         } catch (Throwable $e) {
@@ -124,7 +211,63 @@ final class TransactionManager
             }
             throw $e;
         } finally {
-            $this->depth--;
+            if ($storage !== null && isset($storage[$key])) {
+                /** @var list<list<callable>> $frames */
+                $frames = $storage[$key];
+                $own = array_pop($frames) ?? [];
+                if ($released && $frames !== []) {
+                    $frames[count($frames) - 1] = array_merge($frames[count($frames) - 1], $own);
+                }
+                $storage[$key] = $frames;
+            }
+        }
+    }
+
+    private function begin(): void
+    {
+        $storage = Coroutine::getContext();
+        if ($storage !== null) {
+            $storage[self::FRAMES_KEY . $this->connectionName] = [[]];
+            $storage[self::MARKS_KEY . $this->connectionName] = [];
+        }
+    }
+
+    /** @return array{list<callable>, list<string>} the outer frame's callbacks and the recorded marks */
+    private function end(): array
+    {
+        $storage = Coroutine::getContext();
+        if ($storage === null) {
+            return [[], []];
+        }
+        $framesKey = self::FRAMES_KEY . $this->connectionName;
+        $marksKey = self::MARKS_KEY . $this->connectionName;
+        /** @var list<list<callable>> $frames */
+        $frames = $storage[$framesKey] ?? [[]];
+        /** @var list<string> $marks */
+        $marks = $storage[$marksKey] ?? [];
+        unset($storage[$framesKey], $storage[$marksKey]);
+
+        return [$frames[0] ?? [], $marks];
+    }
+
+    /**
+     * Runs after-commit callbacks in registration order. Every callback runs; the first exception
+     * is rethrown afterwards (the transaction itself is already committed).
+     *
+     * @param list<callable> $callbacks
+     */
+    private function runCallbacks(array $callbacks): void
+    {
+        $failure = null;
+        foreach ($callbacks as $callback) {
+            try {
+                $callback();
+            } catch (Throwable $e) {
+                $failure ??= $e;
+            }
+        }
+        if ($failure !== null) {
+            throw $failure;
         }
     }
 

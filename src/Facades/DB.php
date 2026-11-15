@@ -81,6 +81,46 @@ final class DB extends Facade
         return self::connection()->transaction($callback, $attempts);
     }
 
+    /**
+     * Runs `$callback` once the current transaction has committed (immediately outside a
+     * transaction). Callbacks registered inside a nested transaction that rolls back are discarded.
+     */
+    public static function afterCommit(callable $callback): void
+    {
+        self::connection()->afterCommit($callback);
+    }
+
+    /**
+     * Invalidates cached rows that were changed outside the query builder (another service, a
+     * trigger, a manual fix). `$keys` are primary-key values, or tuples for composite keys.
+     *
+     * @param list<list<int|string>|int|string> $keys
+     */
+    public static function invalidate(string $table, array $keys, bool $absent = false): void
+    {
+        self::connection()->invalidate($table, $keys, $absent);
+    }
+
+    /**
+     * Runs a raw SQL write that changes the given rows of a cached table, keeping the row cache
+     * consistent.
+     *
+     * ```php
+     * DB::writing('users', [10, 11], fn () => DB::execute('update users set score = score + 1 where id in (10, 11)'));
+     * ```
+     *
+     * @template T
+     *
+     * @param list<list<int|string>|int|string> $keys
+     * @param callable(): T                      $write
+     *
+     * @return T
+     */
+    public static function writing(string $table, array $keys, callable $write, bool $inserts = false): mixed
+    {
+        return self::connection()->writing($table, $keys, $write, $inserts);
+    }
+
     /** @param list<mixed> $bindings */
     public static function raw(string $sql, array $bindings = []): Expression
     {
