@@ -21,12 +21,22 @@ jobs:
       - uses: shivammathur/setup-php@v2
         with:
           php-version: ${{ matrix.php }}
-          extensions: openswoole-26.2.0, redis, pdo_mysql, mbstring
+          extensions: redis, pdo_mysql, mbstring
           tools: composer:v2
           coverage: none
-        env:
-          # Same build options as the documented installation (HTTP/2 and TLS are required).
-          OPENSWOOLE_CONFIGURE_OPTS: --enable-openssl --enable-http2 --enable-hook-curl
+
+      - name: Build OpenSwoole 26.2 (TLS, HTTP/2, curl hook)
+        run: |
+          # Same options as the documented installation; the HTTP client needs HTTP/2.
+          sudo apt-get install -y --no-install-recommends libssl-dev libcurl4-openssl-dev
+          curl -sSfL https://pecl.php.net/get/openswoole-26.2.0.tgz | tar xz
+          cd openswoole-26.2.0
+          phpize
+          ./configure --enable-openssl --enable-http2 --enable-hook-curl
+          make -j"$(nproc)"
+          sudo make install
+          echo "extension=openswoole" | sudo tee "$(php -r 'echo PHP_CONFIG_FILE_SCAN_DIR;')/60-openswoole.ini"
+          php --ri openswoole | grep -iE 'version|http2|openssl|curl'
 
       - name: Install MariaDB and Redis binaries
         run: |
@@ -68,12 +78,22 @@ jobs:
       - uses: shivammathur/setup-php@v2
         with:
           php-version: '8.5'
-          extensions: openswoole-26.2.0, redis, pdo_mysql, mbstring
+          extensions: redis, pdo_mysql, mbstring
           tools: composer:v2
           coverage: none
-        env:
-          # Same build options as the documented installation (HTTP/2 and TLS are required).
-          OPENSWOOLE_CONFIGURE_OPTS: --enable-openssl --enable-http2 --enable-hook-curl
+
+      - name: Build OpenSwoole 26.2 (TLS, HTTP/2, curl hook)
+        run: |
+          # Same options as the documented installation; the HTTP client needs HTTP/2.
+          sudo apt-get install -y --no-install-recommends libssl-dev libcurl4-openssl-dev
+          curl -sSfL https://pecl.php.net/get/openswoole-26.2.0.tgz | tar xz
+          cd openswoole-26.2.0
+          phpize
+          ./configure --enable-openssl --enable-http2 --enable-hook-curl
+          make -j"$(nproc)"
+          sudo make install
+          echo "extension=openswoole" | sudo tee "$(php -r 'echo PHP_CONFIG_FILE_SCAN_DIR;')/60-openswoole.ini"
+          php --ri openswoole | grep -iE 'version|http2|openssl|curl'
 
       - name: Install MySQL and Redis binaries
         run: |
