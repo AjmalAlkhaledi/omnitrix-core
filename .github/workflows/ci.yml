@@ -58,10 +58,26 @@ jobs:
         run: bin/services up
 
       - name: Unit tests
-        run: php bin/omnitrix-phpunit --testsuite unit
+        run: |
+          mkdir -p var
+          set +e
+          php bin/omnitrix-phpunit --testsuite unit 2>&1 | tee var/unit.log
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            echo "::error title=unit tests::$(sed -n '/^There w/,$p' var/unit.log | head -80 | tr '\n' ' ' | cut -c1-8000)"
+          fi
+          exit "$status"
 
       - name: Integration tests
-        run: php bin/omnitrix-phpunit --testsuite integration
+        run: |
+          mkdir -p var
+          set +e
+          php bin/omnitrix-phpunit --testsuite integration 2>&1 | tee var/integration.log
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            echo "::error title=integration tests::$(sed -n '/^There w/,$p' var/integration.log | head -80 | tr '\n' ' ' | cut -c1-8000)"
+          fi
+          exit "$status"
 
       - name: Stop test services
         if: always()
@@ -119,7 +135,15 @@ jobs:
           fi
 
       - name: Integration tests
-        run: php bin/omnitrix-phpunit --testsuite integration
+        run: |
+          mkdir -p var
+          set +e
+          php bin/omnitrix-phpunit --testsuite integration 2>&1 | tee var/integration.log
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            echo "::error title=integration tests::$(sed -n '/^There w/,$p' var/integration.log | head -80 | tr '\n' ' ' | cut -c1-8000)"
+          fi
+          exit "$status"
 
       - name: Stop test services
         if: always()

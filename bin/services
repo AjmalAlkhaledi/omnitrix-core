@@ -62,8 +62,9 @@ mysql8_up() {
     --innodb-buffer-pool-size=64M --innodb-flush-log-at-trx-commit=2 \
     --max-connections=500 --log-error="$MYSQL_DIR/error.log" >/dev/null 2>&1 &
   for _ in $(seq 1 120); do
-    if mysql --protocol=tcp -h127.0.0.1 -P"$DB_PORT" -uroot -e "SELECT 1" >/dev/null 2>&1; then
-      mysql --protocol=tcp -h127.0.0.1 -P"$DB_PORT" -uroot -e "CREATE DATABASE IF NOT EXISTS \`$DB_NAME\`"
+    if mysql -uroot -S "$MYSQL_SOCK" -e "SELECT 1" >/dev/null 2>&1; then
+      # --initialize-insecure only creates root@localhost; TCP clients connect as 127.0.0.1.
+      mysql -uroot -S "$MYSQL_SOCK" -e "CREATE USER IF NOT EXISTS 'root'@'127.0.0.1' IDENTIFIED BY ''; GRANT ALL ON *.* TO 'root'@'127.0.0.1' WITH GRANT OPTION; CREATE DATABASE IF NOT EXISTS \`$DB_NAME\`"
       echo "mysql: ready on 127.0.0.1:$DB_PORT (db $DB_NAME)"; return
     fi; sleep 0.5
   done
