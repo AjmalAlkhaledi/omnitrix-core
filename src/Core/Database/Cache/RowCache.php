@@ -7,6 +7,7 @@ namespace Omnitrix\Core\Database\Cache;
 use JsonException;
 use Omnitrix\Core\Redis\RedisClient;
 use Redis;
+use WeakMap;
 
 use function array_map;
 use function array_merge;
@@ -83,19 +84,41 @@ final class RowCache
         return #KEYS
         LUA;
 
+    /*
+     * ARGV[1] mode: 'rotate' — a write committed: release one mark and install a fresh token;
+     * 'keep' — a write rolled back: release one mark and keep the token (cached data is still
+     * right); 'invalidate' — an outside change: fresh token, marks untouched.
+     */
     private const string PUBLISH = <<<'LUA'
         for i, key in ipairs(KEYS) do
           local cur = redis.call('GET', key)
-          local pending = 0
+          local token, pending = ARGV[i + 3], 0
           if cur then
             local sep = string.find(cur, ':', 1, true)
             pending = tonumber(string.sub(cur, sep + 1)) or 0
+            if ARGV[1] == 'keep' then token = string.sub(cur, 1, sep - 1) end
           end
-          if ARGV[1] == '1' then pending = pending - 1 end
+          if ARGV[1] ~= 'invalidate' then pending = pending - 1 end
           if pending < 0 then pending = 0 end
           local ttl = ARGV[3]
           if pending > 0 then ttl = ARGV[2] end
-          redis.call('SET', key, ARGV[i + 3] .. ':' .. pending, 'EX', ttl)
+          if cur or ARGV[1] ~= 'keep' then
+            redis.call('SET', key, token .. ':' .. pending, 'EX', ttl)
+          end
+        end
+        return #KEYS
+        LUA;
+
+    /* Extends the marks of a write that is still running (long transactions). */
+    private const string EXTEND = <<<'LUA'
+        for _, key in ipairs(KEYS) do
+          local cur = redis.call('GET', key)
+          if cur then
+            local sep = string.find(cur, ':', 1, true)
+            if (tonumber(string.sub(cur, sep + 1)) or 0) > 0 then
+              redis.call('EXPIRE', key, ARGV[1])
+            end
+          end
         end
         return #KEYS
         LUA;
@@ -172,11 +195,73 @@ final class RowCache
     /** @var array<string, string> script => sha1 */
     private array $shas = [];
 
+    /** @var WeakMap<Redis, true> connections whose server instance was checked */
+    private WeakMap $verified;
+
+    /** @var list<string> */
+    private readonly array $tables;
+
+    /**
+     * @param list<string> $tables every table with a row or query cache (flushed when Redis restarts)
+     */
     public function __construct(
         private readonly RedisClient $redis,
         public readonly CacheConfig $config,
         private readonly string $connection,
-    ) {}
+        array $tables = [],
+    ) {
+        $this->verified = new WeakMap();
+        $this->tables = $tables;
+    }
+
+    /**
+     * Runs `$fn` on a pooled connection. The first use of every connection checks the server's
+     * `run_id` against the one recorded in Redis when the cache was last known to be complete. A
+     * different id means the server restarted (or failed over) and may have loaded data from
+     * before writes it never saw; every cached table is then retired before anything is served.
+     *
+     * @template T
+     *
+     * @param callable(Redis): T $fn
+     *
+     * @return T
+     */
+    private function connection(callable $fn): mixed
+    {
+        return $this->redis->withConnection(function (Redis $r) use ($fn): mixed {
+            if (!isset($this->verified[$r])) {
+                $this->verify($r);
+                $this->verified[$r] = true;
+            }
+
+            return $fn($r);
+        });
+    }
+
+    private function verify(Redis $redis): void
+    {
+        $info = $redis->info('server');
+        $runId = is_array($info) && is_string($info['run_id'] ?? null) ? $info['run_id'] : '';
+        $fenceKey = $this->config->prefix . ':{' . rawurlencode($this->connection) . '}:fence';
+        if ($runId !== '' && $redis->get($fenceKey) === $runId) {
+            return;
+        }
+        $keys = [];
+        foreach ($this->tables as $table) {
+            $keys[] = $this->generationKey($table);
+            $keys[] = $this->epochKey($table);
+        }
+        if ($keys !== []) {
+            $args = ['invalidate', (string) $this->config->lockTtl, (string) $this->versionTtl()];
+            foreach ($keys as $ignored) {
+                $args[] = self::token();
+            }
+            $this->script($redis, self::PUBLISH, $keys, $args);
+        }
+        if ($runId !== '') {
+            $redis->set($fenceKey, $runId);
+        }
+    }
 
     /**
      * Looks up rows by key. One round trip regardless of the number of keys.
@@ -197,7 +282,7 @@ final class RowCache
         }
         $redisKeys[] = $this->epochKey($table);
         $redisKeys[] = $this->generationKey($table);
-        $values = $this->redis->withConnection(static fn(Redis $r): mixed => $r->mget($redisKeys));
+        $values = $this->connection(static fn(Redis $r): mixed => $r->mget($redisKeys));
         $values = is_array($values) ? $values : [];
         $epoch = self::parseVersion($values[count($redisKeys) - 2] ?? false);
         $generation = self::parseVersion($values[count($redisKeys) - 1] ?? false);
@@ -251,7 +336,7 @@ final class RowCache
         if ($commands === []) {
             return;
         }
-        $this->redis->withConnection(function (Redis $r) use ($commands): void {
+        $this->connection(function (Redis $r) use ($commands): void {
             foreach ($commands as [$keys, $args]) {
                 $this->script($r, self::FILL, $keys, $args);
             }
@@ -273,7 +358,7 @@ final class RowCache
         foreach ($versionKeys as $ignored) {
             $args[] = self::token();
         }
-        $this->redis->withConnection(fn(Redis $r): mixed => $this->script($r, self::MARK, $versionKeys, $args));
+        $this->connection(fn(Redis $r): mixed => $this->script($r, self::MARK, $versionKeys, $args));
     }
 
     /**
@@ -283,7 +368,31 @@ final class RowCache
      */
     public function publish(array $versionKeys): void
     {
-        $this->rotate($versionKeys, release: true);
+        $this->rotate($versionKeys, 'rotate');
+    }
+
+    /**
+     * Ends a write that was rolled back: releases the marks and keeps the tokens, because the
+     * cached data still matches the database.
+     *
+     * @param list<string> $versionKeys
+     */
+    public function release(array $versionKeys): void
+    {
+        $this->rotate($versionKeys, 'keep');
+    }
+
+    /**
+     * Keeps the marks of a running write alive for another `lock_ttl` seconds.
+     *
+     * @param list<string> $versionKeys
+     */
+    public function extend(array $versionKeys): void
+    {
+        if ($versionKeys === []) {
+            return;
+        }
+        $this->connection(fn(Redis $r): mixed => $this->script($r, self::EXTEND, $versionKeys, [(string) $this->config->lockTtl]));
     }
 
     /**
@@ -294,7 +403,7 @@ final class RowCache
      */
     public function invalidate(array $versionKeys): void
     {
-        $this->rotate($versionKeys, release: false);
+        $this->rotate($versionKeys, 'invalidate');
     }
 
     /**
@@ -305,7 +414,7 @@ final class RowCache
      */
     public function lookupQuery(string $queryKey, array $dependencies): QueryLookup
     {
-        $values = $this->redis->withConnection(static fn(Redis $r): mixed => $r->mget([$queryKey, ...$dependencies]));
+        $values = $this->connection(static fn(Redis $r): mixed => $r->mget([$queryKey, ...$dependencies]));
         $values = is_array($values) ? $values : [];
         $tokens = [];
         foreach ($dependencies as $i => $ignored) {
@@ -351,7 +460,7 @@ final class RowCache
             $args[] = $lookup->tokens[$i] ?? '';
             $args[] = self::token();
         }
-        $this->redis->withConnection(fn(Redis $r): mixed => $this->script($r, self::FILL_QUERY, [$queryKey, ...$dependencies], $args));
+        $this->connection(fn(Redis $r): mixed => $this->script($r, self::FILL_QUERY, [$queryKey, ...$dependencies], $args));
     }
 
     public function queryKey(string $table, string $hash): string
@@ -404,20 +513,23 @@ final class RowCache
      */
     public function flush(string $table): void
     {
-        $this->rotate([$this->generationKey($table), $this->epochKey($table)], release: false);
+        $this->rotate([$this->generationKey($table), $this->epochKey($table)], 'invalidate');
     }
 
-    /** @param list<string> $versionKeys */
-    private function rotate(array $versionKeys, bool $release): void
+    /**
+     * @param list<string>                  $versionKeys
+     * @param 'rotate'|'keep'|'invalidate'  $mode
+     */
+    private function rotate(array $versionKeys, string $mode): void
     {
         if ($versionKeys === []) {
             return;
         }
-        $args = [$release ? '1' : '0', (string) $this->config->lockTtl, (string) $this->versionTtl()];
+        $args = [$mode, (string) $this->config->lockTtl, (string) $this->versionTtl()];
         foreach ($versionKeys as $ignored) {
             $args[] = self::token();
         }
-        $this->redis->withConnection(fn(Redis $r): mixed => $this->script($r, self::PUBLISH, $versionKeys, $args));
+        $this->connection(fn(Redis $r): mixed => $this->script($r, self::PUBLISH, $versionKeys, $args));
     }
 
     /**

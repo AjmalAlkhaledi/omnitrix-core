@@ -45,7 +45,7 @@ final readonly class CacheConfig
         public bool $negative = true,
         public int $negativeTtl = 60,
         public int $lockTtl = 30,
-        public bool $strict = false,
+        public bool $strict = true,
         public string $prefix = 'dbc',
         public array $queries = [],
     ) {}
@@ -87,7 +87,7 @@ final readonly class CacheConfig
             negative: self::bool($section, 'negative', true, $path),
             negativeTtl: self::int($section, 'negative_ttl', 60, 1, $path),
             lockTtl: self::int($section, 'lock_ttl', 30, 1, $path),
-            strict: self::bool($section, 'strict', false, $path),
+            strict: self::bool($section, 'strict', true, $path),
             prefix: self::prefix($section['prefix'] ?? 'dbc', "{$path}.prefix"),
             queries: $queries,
         );

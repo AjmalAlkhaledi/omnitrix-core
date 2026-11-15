@@ -7,6 +7,7 @@ namespace Omnitrix\Core\Database\Cache;
 use Closure;
 use Omnitrix\Core\Database\Contracts\GrammarInterface;
 use Omnitrix\Core\Database\Transaction\TransactionManager;
+use Omnitrix\Core\Runtime\Coroutine\Timers;
 use Psr\Log\LoggerInterface;
 use Throwable;
 
@@ -22,12 +23,14 @@ use function array_values;
 use function count;
 use function implode;
 use function in_array;
+use function intdiv;
 use function is_array;
 use function is_bool;
 use function is_int;
 use function is_scalar;
 use function is_string;
 use function ksort;
+use function max;
 use function microtime;
 use function preg_match;
 use function rtrim;
@@ -72,6 +75,14 @@ final class CacheCoordinator
     /** @var array<string, array<string, string>> "table.column" => value => collation weight */
     private array $weights = [];
 
+    /** @var array<string, true> keys whose invalidation is owed after a Redis failure */
+    private array $debt = [];
+
+    /** @var array<string, int> marks held by running writes in this worker => count */
+    private array $active = [];
+
+    private ?int $renewal = null;
+
     /**
      * @param Closure(string, list<mixed>): list<array<string, mixed>> $select  runs a query (on the pinned connection inside transactions)
      * @param Closure(string, list<mixed>): int                         $execute runs a statement
@@ -112,7 +123,7 @@ final class CacheCoordinator
      */
     public function selectByKeys(string $table, array $columns, array $keys, Closure $fallback): array
     {
-        $keyColumns = $this->schema->isCached($table) && !$this->transactions->inTransaction() ? $this->schema->keyColumns($table) : null;
+        $keyColumns = $this->schema->isCached($table) && !$this->transactions->inTransaction() && $this->payDebt() ? $this->schema->keyColumns($table) : null;
         $order = $keyColumns === null ? null : self::reorder($columns, $keyColumns);
         if ($keyColumns === null || $order === null) {
             return $fallback();
@@ -185,14 +196,35 @@ final class CacheCoordinator
             return 0; // nothing matched the WHERE clause
         }
 
+        return $this->guarded($marks, fn(): int => $this->runAll($statements, $mutation->kind));
+    }
+
+    /**
+     * Marks `$marks`, runs `$write`, and ends the marks: inside a transaction when the outermost
+     * transaction ends (see {@see release()}); otherwise right after the write. A failed write
+     * outside a transaction still invalidates, because a lost connection can hide a committed
+     * statement.
+     *
+     * @template T
+     *
+     * @param list<string>   $marks
+     * @param callable(): T  $write
+     *
+     * @return T
+     */
+    private function guarded(array $marks, callable $write): mixed
+    {
+        if ($marks === []) {
+            return $write();
+        }
         $this->mark($marks);
         if ($this->transactions->remember($marks)) {
-            return $this->runAll($statements, $mutation->kind);
+            return $write();
         }
         try {
-            return $this->runAll($statements, $mutation->kind);
+            return $write();
         } finally {
-            $this->publish($marks);
+            $this->end($marks, true);
         }
     }
 
@@ -214,15 +246,7 @@ final class CacheCoordinator
         if ($inserts && $this->schema->isCached($table)) {
             $marks[] = $this->cache->epochKey($table);
         }
-        $this->mark($marks);
-        if ($this->transactions->remember($marks)) {
-            return $write();
-        }
-        try {
-            return $write();
-        } finally {
-            $this->publish($marks);
-        }
+        return $this->guarded($marks, $write);
     }
 
     /**
@@ -429,8 +453,17 @@ final class CacheCoordinator
             return [];
         }
         $columns = $childKeys ?? [];
-        $grandchildren = $delete && $cascade->onDelete ? $this->schema->cascadesFrom($child) : [];
-        foreach ([...array_keys($tracked), ...array_merge([], ...array_map(static fn(Cascade $c): array => $c->parentColumns, $grandchildren))] as $column) {
+        // Next level: rows deleted by this cascade cascade their deletion; columns this cascade
+        // changes (ON UPDATE CASCADE, SET NULL) cascade as updates of those columns.
+        $grandchildren = [];
+        foreach ($this->schema->cascadesFrom($child) as $next) {
+            $deletes = $delete && $next->onDelete;
+            $updates = $next->onUpdate && array_intersect($next->parentColumns, $cascade->childColumns) !== [];
+            if ($deletes || $updates) {
+                $grandchildren[] = [$next, $deletes];
+            }
+        }
+        foreach ([...array_keys($tracked), ...array_merge([], ...array_map(static fn(array $g): array => $g[0]->parentColumns, $grandchildren))] as $column) {
             if (!in_array($column, $columns, true)) {
                 $columns[] = $column;
             }
@@ -455,8 +488,8 @@ final class CacheCoordinator
                 $marks[] = $this->cache->columnKey($child, $column); // the cascaded new value is not read here
             }
         }
-        foreach ($grandchildren as $next) {
-            $marks = array_merge($marks, $this->childMarks($next, self::unique(self::tuples($rows, $next->parentColumns)), $delete, $depth + 1));
+        foreach ($grandchildren as [$next, $deletes]) {
+            $marks = array_merge($marks, $this->childMarks($next, self::unique(self::tuples($rows, $next->parentColumns)), $deletes, $depth + 1));
         }
 
         return $marks;
@@ -473,7 +506,7 @@ final class CacheCoordinator
      */
     public function selectCached(string $table, string $sql, array $bindings, array $predicates, int $ttl, Closure $fallback): array
     {
-        if ($this->transactions->inTransaction()) {
+        if ($this->transactions->inTransaction() || !$this->payDebt()) {
             return $fallback();
         }
         $tracked = $this->schema->trackedColumns($table);
@@ -726,9 +759,16 @@ final class CacheCoordinator
         return $marks;
     }
 
-    /** @param list<string> $marks */
+    /**
+     * Marks keys before a write. In strict mode (the default) a failure aborts the write. Otherwise
+     * the write proceeds and the keys become a debt of this worker, paid (invalidated) as soon as
+     * Redis answers again; until then this worker does not use the cache.
+     *
+     * @param list<string> $marks
+     */
     private function mark(array $marks): void
     {
+        $this->payDebt();
         try {
             foreach (array_chunk($marks, self::CHUNK) as $chunk) {
                 $this->cache->mark($chunk);
@@ -738,29 +778,113 @@ final class CacheCoordinator
             if ($this->cache->config->strict) {
                 throw new CacheUnavailableException('The row cache could not be updated before a write; the write was not run (strict mode)', 0, $e);
             }
+            $this->owe($marks);
+
+            return;
         }
+        $this->renew($marks, +1);
     }
 
-    /** @param list<string> $marks */
-    private function publish(array $marks): void
+    /**
+     * Ends marks: `$changed` installs fresh versions (the write committed or may have); otherwise
+     * the marks are released and cached data kept (the write rolled back).
+     *
+     * @param list<string> $marks
+     */
+    private function end(array $marks, bool $changed): void
     {
+        $this->renew($marks, -1);
         try {
             foreach (array_chunk($marks, self::CHUNK) as $chunk) {
-                $this->cache->publish($chunk);
+                $changed ? $this->cache->publish($chunk) : $this->cache->release($chunk);
             }
         } catch (Throwable $e) {
-            $this->failed('publish', $e);
+            $this->failed($changed ? 'publish' : 'release', $e);
+            if ($changed) {
+                // Marks that were set stay until lock_ttl (readers use the database meanwhile);
+                // invalidate as soon as Redis answers so nothing filled later survives.
+                $this->owe($marks);
+            }
         }
     }
 
     /**
-     * Releases marks recorded by a transaction (called by the transaction manager).
+     * Ends marks recorded by a transaction (called by the transaction manager): on commit (or a
+     * commit with an unknown outcome) the rows are invalidated; on rollback the marks are released
+     * and the cached rows kept.
      *
      * @param list<string> $marks
      */
-    public function release(array $marks): void
+    public function release(array $marks, bool $committed = true): void
     {
-        $this->publish(self::uniqueStrings($marks));
+        $this->end($marks, $committed);
+    }
+
+    /** @param list<string> $keys */
+    private function owe(array $keys): void
+    {
+        foreach ($keys as $key) {
+            $this->debt[$key] = true;
+        }
+    }
+
+    /** Invalidates keys whose writes could not be marked; true when nothing is owed. */
+    private function payDebt(): bool
+    {
+        if ($this->debt === []) {
+            return true;
+        }
+        try {
+            foreach (array_chunk(array_keys($this->debt), self::CHUNK) as $chunk) {
+                $this->cache->invalidate($chunk);
+            }
+            $this->debt = [];
+
+            return true;
+        } catch (Throwable $e) {
+            $this->failed('invalidate', $e);
+
+            return false;
+        }
+    }
+
+    /**
+     * Keeps the marks of running writes alive: one worker-wide timer extends every active mark
+     * by `lock_ttl` every third of `lock_ttl`, so a transaction longer than `lock_ttl` never loses
+     * its marks.
+     *
+     * @param list<string> $marks
+     */
+    private function renew(array $marks, int $delta): void
+    {
+        foreach ($marks as $key) {
+            $count = ($this->active[$key] ?? 0) + $delta;
+            if ($count > 0) {
+                $this->active[$key] = $count;
+            } else {
+                unset($this->active[$key]);
+            }
+        }
+        if ($this->active !== [] && $this->renewal === null) {
+            $interval = max(200, intdiv($this->cache->config->lockTtl * 1000, 3));
+            $this->renewal = Timers::tick($interval, function (): void {
+                if ($this->active === []) {
+                    if ($this->renewal !== null) {
+                        Timers::clear($this->renewal);
+                        $this->renewal = null;
+                    }
+
+                    return;
+                }
+                try {
+                    foreach (array_chunk(array_keys($this->active), self::CHUNK) as $chunk) {
+                        $this->cache->extend($chunk);
+                    }
+                } catch (Throwable $e) {
+                    $this->failed('extend', $e);
+                }
+            });
+        }
     }
 
     /** @param list<array{string, list<mixed>}> $statements */

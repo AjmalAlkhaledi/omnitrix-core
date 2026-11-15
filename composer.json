@@ -57,6 +57,11 @@
     "bin": [
         "bin/omnitrix-phpunit"
     ],
+    "extra": {
+        "branch-alias": {
+            "dev-x.0-dev": "0.2.x-dev"
+        }
+    },
     "config": {
         "sort-packages": true,
         "optimize-autoloader": true,

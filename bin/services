@@ -7,6 +7,7 @@ VAR="$ROOT/var"
 DB_PORT="${OMNITRIX_TEST_DB_PORT:-33306}"
 DB_NAME="${OMNITRIX_TEST_DB_NAME:-omnitrix_test}"
 REDIS_PORT="${OMNITRIX_TEST_REDIS_PORT:-63790}"
+DB_ENGINE="${OMNITRIX_TEST_DB_ENGINE:-mariadb}"   # mariadb or mysql
 MYSQL_DIR="$VAR/mysql"; REDIS_DIR="$VAR/redis"
 MYSQL_PID="$MYSQL_DIR/mariadbd.pid"; REDIS_PID="$REDIS_DIR/redis.pid"
 MYSQL_SOCK="$MYSQL_DIR/mariadbd.sock"
@@ -26,6 +27,7 @@ detach() {
 }
 
 mysql_up() {
+  if [ "$DB_ENGINE" = "mysql" ]; then mysql8_up; return; fi
   need mariadbd; need mariadb; need mariadb-install-db
   mkdir -p "$MYSQL_DIR"
   if alive "$MYSQL_PID"; then echo "mariadb: already running (pid $(cat "$MYSQL_PID"))"; return; fi
@@ -45,6 +47,27 @@ mysql_up() {
     fi; sleep 0.5
   done
   echo "mariadb: failed to start, see $MYSQL_DIR/error.log" >&2; exit 1
+}
+# MySQL 8 (OMNITRIX_TEST_DB_ENGINE=mysql): same layout, root without password.
+mysql8_up() {
+  need mysqld; need mysql
+  mkdir -p "$MYSQL_DIR"
+  if alive "$MYSQL_PID"; then echo "mysql: already running (pid $(cat "$MYSQL_PID"))"; return; fi
+  if [ ! -d "$MYSQL_DIR/data/mysql" ]; then
+    echo "mysql: initialising datadir"
+    mysqld --no-defaults --initialize-insecure --datadir="$MYSQL_DIR/data" --innodb-log-file-size=16M >"$MYSQL_DIR/install.log" 2>&1
+  fi
+  detach mysqld --no-defaults --datadir="$MYSQL_DIR/data" --port="$DB_PORT" --bind-address=127.0.0.1 \
+    --socket="$MYSQL_SOCK" --pid-file="$MYSQL_PID" --skip-name-resolve --mysqlx=OFF \
+    --innodb-buffer-pool-size=64M --innodb-flush-log-at-trx-commit=2 \
+    --max-connections=500 --log-error="$MYSQL_DIR/error.log" >/dev/null 2>&1 &
+  for _ in $(seq 1 120); do
+    if mysql --protocol=tcp -h127.0.0.1 -P"$DB_PORT" -uroot -e "SELECT 1" >/dev/null 2>&1; then
+      mysql --protocol=tcp -h127.0.0.1 -P"$DB_PORT" -uroot -e "CREATE DATABASE IF NOT EXISTS \`$DB_NAME\`"
+      echo "mysql: ready on 127.0.0.1:$DB_PORT (db $DB_NAME)"; return
+    fi; sleep 0.5
+  done
+  echo "mysql: failed to start, see $MYSQL_DIR/error.log" >&2; exit 1
 }
 mysql_down() {
   if alive "$MYSQL_PID"; then kill "$(cat "$MYSQL_PID")"; for _ in $(seq 1 60); do alive "$MYSQL_PID" || break; sleep 0.5; done; echo "mariadb: stopped"; else echo "mariadb: not running"; fi

@@ -160,6 +160,48 @@ final class QueryCacheTest extends TestCase
         self::assertSame([], $this->titles(3));
     }
 
+    public function testBulkMovesAndChangesOfNonFilterColumns(): void
+    {
+        self::assertSame(['A1', 'A2'], $this->titles(1));
+        self::assertSame(['B1'], $this->titles(2));
+
+        $this->db->table('posts')->where('user_id', 1)->update(['title' => 'New title']);
+        self::assertSame(['New title', 'New title'], $this->titles(1), 'changing another column of matching rows invalidates');
+        self::assertSame(['B1'], $this->titles(2));
+
+        $this->db->table('posts')->where('user_id', 1)->update(['user_id' => 2]);
+        self::assertSame([], $this->titles(1), 'the rows left user 1');
+        self::assertSame(['New title', 'New title', 'B1'], $this->titles(2), 'and joined user 2');
+    }
+
+    public function testPaginationAndAggregatesFollowEveryKindOfWrite(): void
+    {
+        $page = fn(int $number): array => $this->db->table('posts')->where('user_id', 1)->orderBy('id')->limit(1)->offset($number - 1)->cache(60)->get();
+        $count = fn(): int => $this->db->table('posts')->where('user_id', 1)->cache(60)->count();
+        $sum = fn(): float => (float) $this->db->table('posts')->where('user_id', 1)->cache(60)->sum('views'); // SUM() is DECIMAL
+        $exists = fn(): bool => $this->db->table('posts')->where('user_id', 1)->where('status', 'archived')->cache(60)->exists();
+        $state = fn(): array => [array_column($page(1), 'title'), array_column($page(2), 'title'), $count(), $sum(), $exists()];
+
+        self::assertSame([['A1'], ['A2'], 2, 0.0, false], $state());
+
+        $this->db->table('posts')->insert(['id' => 5, 'user_id' => 1, 'status' => 'archived', 'title' => 'A0', 'views' => 7]);
+        self::assertSame([['A0'], ['A1'], 3, 7.0, true], $state(), 'after an insert');
+
+        $this->db->table('posts')->where('id', 10)->update(['views' => 3]);
+        self::assertSame([['A0'], ['A1'], 3, 10.0, true], $state(), 'after an update');
+
+        $this->db->table('posts')->where('id', 5)->delete();
+        self::assertSame([['A1'], ['A2'], 2, 3.0, false], $state(), 'after a delete');
+    }
+
+    public function testJoinsAreNeverCached(): void
+    {
+        $joined = fn(): array => array_column($this->db->table('posts')->join('users', 'users.id', '=', 'posts.user_id')->where('posts.user_id', 1)->select('users.name')->cache(60)->get(), 'name');
+        self::assertSame(['Ann', 'Ann'], $joined());
+        $this->behind("UPDATE users SET name = 'Ann B.' WHERE id = 1");
+        self::assertSame(['Ann B.', 'Ann B.'], $joined(), 'a change in the joined table is always visible');
+    }
+
     /** @return list<mixed> */
     private function titles(int $user): array
     {

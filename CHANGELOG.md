@@ -4,7 +4,10 @@ All notable changes to this project are documented in this file. The format foll
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [Unreleased] — planned as 0.2.0
+
+0.x releases may change behaviour between minor versions: applications pinned to `^0.1` stay on
+0.1.x; the application template moves to `^0.2` with this release.
 
 ### Added
 
@@ -22,6 +25,12 @@ All notable changes to this project are documented in this file. The format foll
 - Cascades through composite foreign keys, cache metrics in `/metrics`, and the cache
   configuration is validated when the application is created.
 - `afterCommit()` on connections and the `DB` facade, with nested-transaction semantics.
+- Reliability: writes are refused when the cache cannot be marked (`strict`, on by default); a
+  Redis restart or failover (new `run_id`) retires every cached table before use; marks of long
+  transactions are renewed; rollbacks (including deadlock retries) release their marks without
+  invalidating; commits with an unknown outcome invalidate.
+- MySQL 8 support in `bin/services` (`OMNITRIX_TEST_DB_ENGINE=mysql`) and a MySQL job in CI.
+- `tools/bench/db_cache_bench.php` to measure the caches on representative hardware.
 - `DB::writing()` for raw SQL writes to cached tables, `DB::invalidate()` for rows changed
   outside the application and `Database::flushCache()` for table-level changes.
 - Cache statistics per connection (`Database::cacheStats()`): hits, misses, bypassed reads, errors.

@@ -21,6 +21,7 @@ use Omnitrix\Core\Redis\RedisClient;
 use Omnitrix\Core\Runtime\Context\ContextStorage;
 use Psr\Log\LoggerInterface;
 
+use function array_keys;
 use function array_values;
 use function max;
 use function min;
@@ -55,13 +56,13 @@ final class Database implements CacheAwareExecutorInterface
                 $logger->debug('db.pool.' . $event, $context);
             },
         );
-        $this->transactions = new TransactionManager($config->name, function (array $marks): void {
-            $this->cache?->release($marks);
+        $this->transactions = new TransactionManager($config->name, function (array $marks, bool $committed): void {
+            $this->cache?->release($marks, $committed);
         });
         if ($config->cache->enabled && $redis !== null) {
             $select = fn(string $sql, array $bindings): array => $this->select($sql, array_values($bindings));
             $this->cache = new CacheCoordinator(
-                new RowCache($redis, $config->cache, $config->name),
+                new RowCache($redis, $config->cache, $config->name, array_keys($config->cache->tables + $config->cache->queries)),
                 new CacheSchema($config->cache, $select),
                 $this->transactions,
                 $driver->grammar(),

@@ -88,7 +88,7 @@ final class RowCacheShapesTest extends TestCase
         $config = CacheConfig::fromArray(['tables' => ['users', 'memberships' => ['user_id', 'team_id'], 'tags' => 'slug'], 'ttl' => 120], 'default');
         self::assertTrue($config->enabled);
         self::assertSame(['users' => null, 'memberships' => ['user_id', 'team_id'], 'tags' => ['slug']], $config->tables);
-        self::assertSame([120, 60, 30, true, false, 'dbc'], [$config->ttl, $config->negativeTtl, $config->lockTtl, $config->negative, $config->strict, $config->prefix]);
+        self::assertSame([120, 60, 30, true, true, 'dbc'], [$config->ttl, $config->negativeTtl, $config->lockTtl, $config->negative, $config->strict, $config->prefix], 'strict by default');
         self::assertTrue($config->caches('users'));
         self::assertFalse($config->caches('orders'));
 

@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, '*.x']
+    branches: [main, '*.x', 'x.*']
   pull_request:
 
 permissions:
@@ -53,3 +53,43 @@ jobs:
       - name: Stop test services
         if: always()
         run: bin/services down
+
+  mysql:
+    name: MySQL 8 (PHP 8.5)
+    runs-on: ubuntu-24.04
+    env:
+      OMNITRIX_TEST_DB_ENGINE: mysql
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.5'
+          extensions: openswoole-26.2.0, redis, pdo_mysql, mbstring
+          tools: composer:v2
+          coverage: none
+
+      - name: Install MySQL and Redis binaries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mysql-server redis-server
+          sudo systemctl stop mysql redis-server || true
+          sudo systemctl disable mysql || true
+          # The packaged AppArmor profile only allows /var/lib/mysql; bin/services uses var/mysql.
+          if [ -f /etc/apparmor.d/usr.sbin.mysqld ]; then
+            sudo ln -sf /etc/apparmor.d/usr.sbin.mysqld /etc/apparmor.d/disable/
+            sudo apparmor_parser -R /etc/apparmor.d/usr.sbin.mysqld || true
+          fi
+
+      - run: composer install --no-interaction --no-progress
+
+      - name: Start test services
+        run: bin/services up
+
+      - name: Integration tests
+        run: php bin/omnitrix-phpunit --testsuite integration
+
+      - name: Stop test services
+        if: always()
+        run: bin/services down
+

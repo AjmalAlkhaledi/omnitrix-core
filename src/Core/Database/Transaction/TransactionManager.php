@@ -30,9 +30,12 @@ use function random_int;
  *
  * Callbacks registered with {@see afterCommit()} run once the outermost transaction committed:
  * a nested transaction's callbacks join its parent when it succeeds and are discarded when it
- * rolls back; a rolled back outer transaction (or a retried attempt) discards them all. Row-cache
- * marks recorded with {@see remember()} are released when the outermost transaction ends,
- * whether it committed or rolled back.
+ * rolls back; a rolled back outer transaction (or a retried attempt) discards them all.
+ *
+ * Row-cache marks recorded with {@see remember()} follow the same structure: marks of a nested
+ * transaction that rolls back are released at once without invalidating (the rows did not
+ * change); the outermost transaction releases its marks when it ends — invalidating on commit,
+ * keeping the cached data on rollback.
  */
 final class TransactionManager
 {
@@ -42,12 +45,12 @@ final class TransactionManager
 
     private const string MARKS_KEY = 'db.transaction.marks.';
 
-    /** @var (Closure(list<string>): void)|null */
+    /** @var (Closure(list<string>, bool): void)|null */
     private ?Closure $onEnd;
 
     /**
-     * @param (Closure(list<string>): void)|null $onEnd receives the row-cache keys recorded during the
-     *                                                    transaction when the outermost transaction ends
+     * @param (Closure(list<string>, bool): void)|null $onEnd receives row-cache keys to release and
+     *                                                          whether the writes committed (invalidate)
      */
     public function __construct(private readonly string $connectionName, ?Closure $onEnd = null)
     {
@@ -91,10 +94,11 @@ final class TransactionManager
         if ($storage === null || $this->pinned() === null || !isset($storage[$key])) {
             return false;
         }
-        /** @var list<string> $marks */
+        /** @var list<list<string>> $marks one list per transaction level */
         $marks = $storage[$key];
+        $top = count($marks) - 1;
         foreach ($keys as $mark) {
-            $marks[] = $mark;
+            $marks[$top][] = $mark;
         }
         $storage[$key] = $marks;
 
@@ -121,15 +125,20 @@ final class TransactionManager
             $this->pin($connection);
             $this->begin();
             $committed = false;
+            $changed = false;
             try {
                 $connection->beginTransaction();
                 try {
                     $result = $callback($connection);
+                    // From here a failure may hide a commit the server applied (lost connection):
+                    // the row cache treats the writes as changed.
+                    $changed = true;
                     $connection->commit();
                     $committed = true;
 
                     return $result;
                 } catch (Throwable $e) {
+                    $changed = $changed && $connection->isBroken(); // a clean rollback after a failed commit changed nothing
                     try {
                         if ($connection->inTransaction() && !$connection->isBroken()) {
                             $connection->rollBack();
@@ -151,7 +160,7 @@ final class TransactionManager
                 $this->unpin();
                 $connection?->release();
                 if ($marks !== [] && $this->onEnd !== null) {
-                    ($this->onEnd)($marks);
+                    ($this->onEnd)($marks, $committed || $changed);
                 }
                 if ($committed) {
                     $this->runCallbacks($callbacks);
@@ -190,8 +199,15 @@ final class TransactionManager
         $frames = $storage !== null && isset($storage[$key]) ? $storage[$key] : [[]];
         $savepoint = 'omnitrix_sp_' . count($frames);
         $frames[] = [];
+        $marksKey = self::MARKS_KEY . $this->connectionName;
         if ($storage !== null) {
             $storage[$key] = $frames;
+            if (isset($storage[$marksKey])) {
+                /** @var list<list<string>> $levels */
+                $levels = $storage[$marksKey];
+                $levels[] = [];
+                $storage[$marksKey] = $levels;
+            }
         }
         $connection->execute('SAVEPOINT ' . $savepoint);
         $released = false;
@@ -220,6 +236,17 @@ final class TransactionManager
                 }
                 $storage[$key] = $frames;
             }
+            if ($storage !== null && isset($storage[$marksKey])) {
+                /** @var list<list<string>> $levels */
+                $levels = $storage[$marksKey];
+                $ownMarks = array_pop($levels) ?? [];
+                if ($released && $levels !== []) {
+                    $levels[count($levels) - 1] = array_merge($levels[count($levels) - 1], $ownMarks);
+                } elseif ($ownMarks !== [] && $this->onEnd !== null) {
+                    ($this->onEnd)($ownMarks, false); // rolled back to the savepoint: nothing changed
+                }
+                $storage[$marksKey] = $levels;
+            }
         }
     }
 
@@ -228,7 +255,7 @@ final class TransactionManager
         $storage = Coroutine::getContext();
         if ($storage !== null) {
             $storage[self::FRAMES_KEY . $this->connectionName] = [[]];
-            $storage[self::MARKS_KEY . $this->connectionName] = [];
+            $storage[self::MARKS_KEY . $this->connectionName] = [[]];
         }
     }
 
@@ -243,11 +270,11 @@ final class TransactionManager
         $marksKey = self::MARKS_KEY . $this->connectionName;
         /** @var list<list<callable>> $frames */
         $frames = $storage[$framesKey] ?? [[]];
-        /** @var list<string> $marks */
-        $marks = $storage[$marksKey] ?? [];
+        /** @var list<list<string>> $levels */
+        $levels = $storage[$marksKey] ?? [[]];
         unset($storage[$framesKey], $storage[$marksKey]);
 
-        return [$frames[0] ?? [], $marks];
+        return [$frames[0] ?? [], array_merge(...$levels)];
     }
 
     /**
