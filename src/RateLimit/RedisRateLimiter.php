@@ -7,6 +7,7 @@ namespace Omnitrix\RateLimit;
 use Omnitrix\Core\Redis\RedisClient;
 use Omnitrix\Facades\Redis as RedisFacade;
 use Redis;
+use RedisCluster;
 
 use function is_array;
 use function is_int;
@@ -34,7 +35,7 @@ final class RedisRateLimiter implements RateLimiterInterface
     {
         $window = (int) (time() / max(1, $windowSeconds));
         $redis = $this->redis ?? RedisFacade::client();
-        $reply = $redis->withConnection(fn(Redis $r): mixed => $r->eval(self::SCRIPT, [$this->prefix . $key . ':' . $window, (string) $windowSeconds], 1));
+        $reply = $redis->withConnection(fn(Redis|RedisCluster $r): mixed => $r->eval(self::SCRIPT, [$this->prefix . $key . ':' . $window, (string) $windowSeconds], 1));
         $count = is_array($reply) && is_int($reply[0] ?? null) ? $reply[0] : $limit + 1;
         $ttl = is_array($reply) && is_int($reply[1] ?? null) ? $reply[1] : $windowSeconds;
 

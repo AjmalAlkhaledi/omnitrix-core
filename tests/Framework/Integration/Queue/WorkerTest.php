@@ -16,6 +16,7 @@ use Omnitrix\Tests\Support\Services;
 use Omnitrix\Tests\Support\TestCase;
 use PHPUnit\Framework\Attributes\CoversClass;
 use Redis;
+use RedisCluster;
 
 use function dirname;
 use function microtime;
@@ -30,7 +31,7 @@ final class WorkerTest extends TestCase
     public function testWorkerProcessesJobsAndStopsGracefully(): void
     {
         $redis = new RedisClient(RedisConfig::fromArray(['host' => Services::redisHost(), 'port' => Services::redisPort(), 'prefix' => 'omnitrix-worker-test:']));
-        $redis->withConnection(static fn(Redis $r) => $r->flushDB());
+        $redis->withConnection(static fn(Redis|RedisCluster $r) => $r->flushDB());
         $queue = 'w' . uniqid();
         $producer = new QueueProducer(new RedisQueue($redis), $queue);
         foreach (['Ann', 'Bo', 'Cy'] as $name) {
@@ -45,7 +46,7 @@ final class WorkerTest extends TestCase
             while ($redis->llen('greetings') < 3 && microtime(true) < $deadline) {
                 Async::sleep(0.05);
             }
-            self::assertEqualsCanonicalizing(['hello Ann', 'hello Bo', 'hello Cy'], $redis->withConnection(static fn(Redis $r): mixed => $r->lrange('greetings', 0, -1)));
+            self::assertEqualsCanonicalizing(['hello Ann', 'hello Bo', 'hello Cy'], $redis->withConnection(static fn(Redis|RedisCluster $r): mixed => $r->lrange('greetings', 0, -1)));
             $worker->signal(SIGTERM);
             self::assertSame(0, $worker->wait(10.0), $worker->stderr());
             self::assertStringContainsString('"processed":3', $worker->stderr());

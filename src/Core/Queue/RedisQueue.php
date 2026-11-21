@@ -7,6 +7,7 @@ namespace Omnitrix\Core\Queue;
 use InvalidArgumentException;
 use Omnitrix\Core\Redis\RedisClient;
 use Redis;
+use RedisCluster;
 
 use function is_array;
 use function is_int;
@@ -23,7 +24,7 @@ use function substr;
  *
  * Keys per queue `q`: `queue:q:ready` (list), `queue:q:delayed` (sorted set by due time),
  * `queue:q:processing:{consumer}` (list), `queue:q:dead` (list), `queue:consumer:{id}`
- * (heartbeat key). Reserving moves a job atomically from `ready` to the consumer's
+ * (heartbeat key); on a Redis Cluster the queue name is a hash tag (`queue:{q}:ready`). Reserving moves a job atomically from `ready` to the consumer's
  * processing list (BLMOVE), so a consumer that dies mid-job leaves the job recoverable:
  * {@see recover()} returns it to `ready` once the consumer's heartbeat has expired.
  * Delivery is at-least-once; handlers must be idempotent.
@@ -39,18 +40,24 @@ final class RedisQueue
         return #due
         LUA;
 
-    public function __construct(private readonly RedisClient $redis) {}
+    /** Whether keys carry a per-queue hash tag (Redis Cluster): a queue's keys then share one slot. */
+    private readonly bool $cluster;
+
+    public function __construct(private readonly RedisClient $redis)
+    {
+        $this->cluster = $redis->config->isCluster();
+    }
 
     /** Enqueues a job, optionally delayed by `$delay` seconds. */
     public function push(Job $job, float $delay = 0.0): void
     {
         self::assertQueueName($job->queue);
         if ($delay > 0.0) {
-            $this->redis->withConnection(static fn(Redis $r): mixed => $r->zAdd(self::key($job->queue, 'delayed'), microtime(true) + $delay, $job->toJson()));
+            $this->redis->withConnection(fn(Redis|RedisCluster $r): mixed => $r->zAdd($this->keyOf($job->queue, 'delayed'), microtime(true) + $delay, $job->toJson()));
 
             return;
         }
-        $this->redis->withConnection(static fn(Redis $r): mixed => $r->lPush(self::key($job->queue, 'ready'), $job->toJson()));
+        $this->redis->withConnection(fn(Redis|RedisCluster $r): mixed => $r->lPush($this->keyOf($job->queue, 'ready'), $job->toJson()));
     }
 
     /**
@@ -62,7 +69,7 @@ final class RedisQueue
     public function reserve(string $queue, string $consumer, int $timeout = 1): ?array
     {
         $this->promoteDue($queue);
-        $raw = $this->redis->withConnection(static fn(Redis $r): mixed => $r->blmove(self::key($queue, 'ready'), self::key($queue, 'processing:' . $consumer), 'RIGHT', 'LEFT', max(1, $timeout)));
+        $raw = $this->redis->withConnection(fn(Redis|RedisCluster $r): mixed => $r->blmove($this->keyOf($queue, 'ready'), $this->keyOf($queue, 'processing:' . $consumer), 'RIGHT', 'LEFT', max(1, $timeout)));
         if (!is_string($raw)) {
             return null;
         }
@@ -70,9 +77,9 @@ final class RedisQueue
             return [Job::fromJson($raw), $raw];
         } catch (InvalidArgumentException $e) {
             // poison message: park it in the dead letter list untouched
-            $this->redis->transaction(static function (Redis $m) use ($queue, $consumer, $raw): void {
-                $m->lrem(self::key($queue, 'processing:' . $consumer), $raw, 1);
-                $m->lPush(self::key($queue, 'dead'), $raw);
+            $this->redis->transaction(function (Redis|RedisCluster $m) use ($queue, $consumer, $raw): void {
+                $m->lrem($this->keyOf($queue, 'processing:' . $consumer), $raw, 1);
+                $m->lPush($this->keyOf($queue, 'dead'), $raw);
             });
 
             return null;
@@ -82,24 +89,24 @@ final class RedisQueue
     /** Removes a finished job from the processing list. */
     public function ack(string $queue, string $consumer, string $raw): void
     {
-        $this->redis->withConnection(static fn(Redis $r): mixed => $r->lrem(self::key($queue, 'processing:' . $consumer), $raw, 1));
+        $this->redis->withConnection(fn(Redis|RedisCluster $r): mixed => $r->lrem($this->keyOf($queue, 'processing:' . $consumer), $raw, 1));
     }
 
     /** Re-schedules a failed job after `$delay` seconds (atomic move). */
     public function retry(string $queue, string $consumer, string $raw, Job $next, float $delay): void
     {
-        $this->redis->transaction(static function (Redis $m) use ($queue, $consumer, $raw, $next, $delay): void {
-            $m->lrem(self::key($queue, 'processing:' . $consumer), $raw, 1);
-            $m->zAdd(self::key($queue, 'delayed'), microtime(true) + $delay, $next->toJson());
+        $this->redis->transaction(function (Redis|RedisCluster $m) use ($queue, $consumer, $raw, $next, $delay): void {
+            $m->lrem($this->keyOf($queue, 'processing:' . $consumer), $raw, 1);
+            $m->zAdd($this->keyOf($queue, 'delayed'), microtime(true) + $delay, $next->toJson());
         });
     }
 
     /** Moves a job that exhausted its attempts to the dead letter list (atomic). */
     public function bury(string $queue, string $consumer, string $raw, Job $final): void
     {
-        $this->redis->transaction(static function (Redis $m) use ($queue, $consumer, $raw, $final): void {
-            $m->lrem(self::key($queue, 'processing:' . $consumer), $raw, 1);
-            $m->lPush(self::key($queue, 'dead'), $final->toJson());
+        $this->redis->transaction(function (Redis|RedisCluster $m) use ($queue, $consumer, $raw, $final): void {
+            $m->lrem($this->keyOf($queue, 'processing:' . $consumer), $raw, 1);
+            $m->lPush($this->keyOf($queue, 'dead'), $final->toJson());
         });
     }
 
@@ -121,7 +128,7 @@ final class RedisQueue
      */
     public function recover(string $queue): int
     {
-        $prefix = self::key($queue, 'processing:');
+        $prefix = $this->keyOf($queue, 'processing:');
         $recovered = 0;
         foreach ($this->processingKeys($queue) as $key) {
             $consumer = substr($key, strlen($prefix));
@@ -129,7 +136,7 @@ final class RedisQueue
                 continue;
             }
             while (true) {
-                $moved = $this->redis->withConnection(static fn(Redis $r): mixed => $r->lMove($key, self::key($queue, 'ready'), 'RIGHT', 'LEFT'));
+                $moved = $this->redis->withConnection(fn(Redis|RedisCluster $r): mixed => $r->lMove($key, $this->keyOf($queue, 'ready'), 'RIGHT', 'LEFT'));
                 if (!is_string($moved)) {
                     break;
                 }
@@ -147,20 +154,20 @@ final class RedisQueue
         foreach ($this->processingKeys($queue) as $key) {
             $processing += $this->redis->llen($key);
         }
-        $delayed = $this->redis->withConnection(static fn(Redis $r): mixed => $r->zCard(self::key($queue, 'delayed')));
+        $delayed = $this->redis->withConnection(fn(Redis|RedisCluster $r): mixed => $r->zCard($this->keyOf($queue, 'delayed')));
 
         return [
-            'ready' => $this->redis->llen(self::key($queue, 'ready')),
+            'ready' => $this->redis->llen($this->keyOf($queue, 'ready')),
             'delayed' => is_int($delayed) ? $delayed : 0,
             'processing' => $processing,
-            'dead' => $this->redis->llen(self::key($queue, 'dead')),
+            'dead' => $this->redis->llen($this->keyOf($queue, 'dead')),
         ];
     }
 
     /** @return list<Job> newest first */
     public function deadLetters(string $queue, int $limit = 100): array
     {
-        $raw = $this->redis->withConnection(static fn(Redis $r): mixed => $r->lrange(self::key($queue, 'dead'), 0, max(0, $limit - 1)));
+        $raw = $this->redis->withConnection(fn(Redis|RedisCluster $r): mixed => $r->lrange($this->keyOf($queue, 'dead'), 0, max(0, $limit - 1)));
         $jobs = [];
         foreach (is_array($raw) ? $raw : [] as $item) {
             if (is_string($item)) {
@@ -178,7 +185,7 @@ final class RedisQueue
     /** Moves due delayed jobs to `ready` (atomic Lua script). */
     public function promoteDue(string $queue): int
     {
-        $n = $this->redis->withConnection(static fn(Redis $r): mixed => $r->eval(self::PROMOTE, [self::key($queue, 'delayed'), self::key($queue, 'ready'), (string) microtime(true)], 2));
+        $n = $this->redis->withConnection(fn(Redis|RedisCluster $r): mixed => $r->eval(self::PROMOTE, [$this->keyOf($queue, 'delayed'), $this->keyOf($queue, 'ready'), (string) microtime(true)], 2));
 
         return is_int($n) ? $n : 0;
     }
@@ -186,21 +193,24 @@ final class RedisQueue
     /** Deletes every key of a queue (tests / administration). */
     public function purge(string $queue): void
     {
-        $keys = [self::key($queue, 'ready'), self::key($queue, 'delayed'), self::key($queue, 'dead'), ...$this->processingKeys($queue)];
+        $keys = [$this->keyOf($queue, 'ready'), $this->keyOf($queue, 'delayed'), $this->keyOf($queue, 'dead'), ...$this->processingKeys($queue)];
         $this->redis->delete(...$keys);
     }
 
     /** @return list<string> unprefixed processing list keys */
     private function processingKeys(string $queue): array
     {
-        return $this->redis->withConnection(static function (Redis $r) use ($queue): array {
+        $route = $this->keyOf($queue, 'ready');
+
+        return $this->redis->withConnection(function (Redis|RedisCluster $r) use ($queue, $route): array {
             $option = $r->getOption(Redis::OPT_PREFIX);
             $prefix = is_string($option) ? $option : '';
-            $pattern = $prefix . self::key($queue, 'processing:') . '*';
+            $pattern = $prefix . $this->keyOf($queue, 'processing:') . '*';
             $keys = [];
             $iterator = null;
             do {
-                $batch = $r->scan($iterator, $pattern, 200);
+                // On a cluster every key of the queue is on the node owning its hash tag: scan there.
+                $batch = $r instanceof RedisCluster ? $r->scan($iterator, $route, $pattern, 200) : $r->scan($iterator, $pattern, 200);
                 foreach (is_array($batch) ? $batch : [] as $key) {
                     if (is_string($key)) {
                         $keys[] = $prefix !== '' && str_starts_with($key, $prefix) ? substr($key, strlen($prefix)) : $key;
@@ -212,9 +222,19 @@ final class RedisQueue
         });
     }
 
-    public static function key(string $queue, string $suffix): string
+    /**
+     * Key of a queue structure. On a Redis Cluster the queue name is a hash tag
+     * (`queue:{q}:ready`), so BLMOVE, transactions and scripts over one queue's keys stay in one
+     * slot; a single server keeps the plain names.
+     */
+    public static function key(string $queue, string $suffix, bool $cluster = false): string
     {
-        return 'queue:' . $queue . ':' . $suffix;
+        return $cluster ? 'queue:{' . $queue . '}:' . $suffix : 'queue:' . $queue . ':' . $suffix;
+    }
+
+    private function keyOf(string $queue, string $suffix): string
+    {
+        return self::key($queue, $suffix, $this->cluster);
     }
 
     private static function assertQueueName(string $queue): void

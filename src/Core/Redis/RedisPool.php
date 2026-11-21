@@ -11,9 +11,12 @@ use Omnitrix\Core\Redis\Exception\ConnectionException;
 use Omnitrix\Core\Redis\Exception\TimeoutException;
 use Omnitrix\Core\Runtime\Coroutine\Timers;
 use Redis;
+use RedisCluster;
+use RedisClusterException;
 use RedisException;
 use Throwable;
 
+use function implode;
 use function max;
 
 /**
@@ -22,7 +25,7 @@ use function max;
  */
 final class RedisPool
 {
-    /** @var ClientPool<Redis> */
+    /** @var ClientPool<Redis|RedisCluster> */
     private readonly ClientPool $pool;
 
     private ?int $evictionTimer = null;
@@ -30,21 +33,22 @@ final class RedisPool
     public function __construct(private readonly RedisConfig $config)
     {
         $this->pool = new ClientPool(
-            $config->host . ':' . $config->port . '/' . $config->database,
+            $config->isCluster() ? 'cluster:' . implode(',', $config->cluster) : $config->host . ':' . $config->port . '/' . $config->database,
             $config->poolMax,
             $config->poolAcquireTimeout,
             $config->poolIdleTimeout,
-            fn(): Redis => $this->connect(),
-            static function (Redis $redis): void {
+            fn(): Redis|RedisCluster => $this->connect(),
+            static function (Redis|RedisCluster $redis): void {
                 try {
                     $redis->close();
                 } catch (Throwable) {
                     // already gone
                 }
             },
-            static function (Redis $redis): bool {
+            static function (Redis|RedisCluster $redis): bool {
                 try {
-                    return $redis->ping() === true;
+                    // A cluster answers PING per node: route it by key to any node.
+                    return $redis instanceof RedisCluster ? $redis->ping('omnitrix:ping') !== false : $redis->ping() === true;
                 } catch (Throwable) {
                     return false;
                 }
@@ -54,8 +58,11 @@ final class RedisPool
     }
 
     /** Opens a fresh, authenticated connection outside the pool (pub/sub, blocking consumers). */
-    public function connect(): Redis
+    public function connect(): Redis|RedisCluster
     {
+        if ($this->config->isCluster()) {
+            return $this->connectCluster();
+        }
         $redis = new Redis();
         try {
             if (!$redis->connect($this->config->host, $this->config->port, $this->config->timeout, null, 0, $this->config->readTimeout)) {
@@ -81,7 +88,26 @@ final class RedisPool
         return $redis;
     }
 
-    public function acquire(?CancellationToken $token = null): Redis
+    private function connectCluster(): RedisCluster
+    {
+        $auth = $this->config->password === null ? null : ($this->config->username !== null ? [$this->config->username, $this->config->password] : $this->config->password);
+        try {
+            $redis = new RedisCluster(null, $this->config->cluster, $this->config->timeout, $this->config->readTimeout, false, $auth);
+            $redis->setOption(Redis::OPT_READ_TIMEOUT, (string) $this->config->readTimeout);
+            // Commands go to the node owning the key's slot; after a failover the client follows
+            // MOVED redirections and refreshes its slot map.
+            $redis->setOption(RedisCluster::OPT_SLAVE_FAILOVER, RedisCluster::FAILOVER_NONE);
+            if ($this->config->prefix !== '') {
+                $redis->setOption(Redis::OPT_PREFIX, $this->config->prefix);
+            }
+        } catch (RedisClusterException|RedisException $e) {
+            throw new ConnectionException('Could not connect to the Redis Cluster at ' . implode(', ', $this->config->cluster) . ': ' . $e->getMessage(), 0, $e);
+        }
+
+        return $redis;
+    }
+
+    public function acquire(?CancellationToken $token = null): Redis|RedisCluster
     {
         try {
             $redis = $this->pool->acquire($token);
@@ -93,7 +119,7 @@ final class RedisPool
         return $redis;
     }
 
-    public function release(Redis $redis, bool $healthy = true): void
+    public function release(Redis|RedisCluster $redis, bool $healthy = true): void
     {
         $this->pool->release($redis, $healthy);
     }

@@ -13,6 +13,9 @@ All notable changes to this project are documented in this file. The format foll
   retire all their entries on commit. Triggers calling procedures retire every cached table.
 - `/metrics` reports the pool and cache statistics of every worker, not only the worker that
   served the scrape.
+- **Redis Cluster** (`redis.cluster` seed nodes): client, cache, queue (per-queue hash tag), rate
+  limiter and the database row/query cache (per-table hash tag, restart check per node).
+- MySQL 8.4 LTS in CI next to 8.0.
 
 ### Changed
 
@@ -20,6 +23,8 @@ All notable changes to this project are documented in this file. The format foll
   `omnitrix_worker_memory_bytes`) carry a `worker` label.
 - Requests failing because a database, Redis or connection pool is unavailable answer `503` with
   `Retry-After: 1` instead of `500`.
+- Row cache keys carry the table's hash tag (`{conn:table}:pk:v`); the cache starts empty after the
+  upgrade. Redis connection callbacks are typed `Redis|RedisCluster`.
 
 ### Fixed
 

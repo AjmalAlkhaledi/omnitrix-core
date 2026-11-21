@@ -15,6 +15,7 @@ use Omnitrix\Core\Tests\Support\Services;
 use Omnitrix\Core\Tests\Support\TestCase;
 use PHPUnit\Framework\Attributes\CoversNothing;
 use Redis;
+use RedisCluster;
 
 use function dirname;
 use function is_array;
@@ -41,7 +42,7 @@ final class QueueTest extends TestCase
     {
         parent::setUp();
         $this->redis = new RedisClient(RedisConfig::fromArray(['host' => Services::redisHost(), 'port' => Services::redisPort(), 'prefix' => 'omnitrix-queue-test:']));
-        $this->redis->withConnection(static fn(Redis $r) => $r->flushDB());
+        $this->redis->withConnection(static fn(Redis|RedisCluster $r) => $r->flushDB());
         $this->queueName = 'q' . uniqid();
     }
 
@@ -120,7 +121,7 @@ final class QueueTest extends TestCase
         $this->startWorker();
 
         self::assertTrue(self::eventually(fn(): bool => $this->redis()->llen('done') === 1, 10.0), 'flaky job succeeded after retries');
-        self::assertSame(['0', '1', '2'], $this->redis()->withConnection(static fn(Redis $r): mixed => $r->lrange('attempts', 0, -1)), 'two failures then success');
+        self::assertSame(['0', '1', '2'], $this->redis()->withConnection(static fn(Redis|RedisCluster $r): mixed => $r->lrange('attempts', 0, -1)), 'two failures then success');
         self::assertTrue(self::eventually(fn(): bool => $this->queue()->stats($this->queueName)['dead'] === 2, 10.0));
         $dead = $this->queue()->deadLetters($this->queueName);
         $byName = [];
@@ -156,7 +157,7 @@ final class QueueTest extends TestCase
         self::assertSame(1, $this->queue()->stats($this->queueName)['processing'], 'the job is held by the dead consumer, not lost');
 
         // Fast-forward heartbeat expiry instead of waiting 30 s.
-        $this->redis()->withConnection(function (Redis $r): void {
+        $this->redis()->withConnection(function (Redis|RedisCluster $r): void {
             $iterator = null;
             $keys = $r->scan($iterator, 'omnitrix-queue-test:queue:consumer:*', 100);
             foreach (is_array($keys) ? $keys : [] as $key) {
@@ -164,7 +165,7 @@ final class QueueTest extends TestCase
             }
         });
         $this->redis()->delete('started');
-        $this->redis()->withConnection(static fn(Redis $r) => $r->rawcommand('SET', 'omnitrix-queue-test:noop', '1'));
+        $this->redis()->withConnection(static fn(Redis|RedisCluster $r) => $r->rawcommand('SET', 'omnitrix-queue-test:noop', '1'));
 
         // Shorten the recovered job by editing it is not possible; instead a new consumer runs it.
         $this->startWorker(concurrency: 1, jobTimeout: 1.0);

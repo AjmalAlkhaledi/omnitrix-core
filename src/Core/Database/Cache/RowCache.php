@@ -7,6 +7,7 @@ namespace Omnitrix\Core\Database\Cache;
 use JsonException;
 use Omnitrix\Core\Redis\RedisClient;
 use Redis;
+use RedisCluster;
 use WeakMap;
 
 use function array_map;
@@ -38,11 +39,12 @@ use const JSON_UNESCAPED_UNICODE;
 /**
  * Redis side of the primary-key row cache.
  *
- * Every cached row has two keys sharing a hash tag:
+ * Every cached row has two keys, tagged with the table so that every key of a table is in one
+ * slot of a Redis Cluster:
  *
- * - `{prefix}:{conn:table:pk}:v` — the row's version: a random token and the number of writers
+ * - `{prefix}:{conn:table}:pk:v` — the row's version: a random token and the number of writers
  *   currently changing the row (`token:pending`);
- * - `{prefix}:{conn:table:pk}:r` — the cached row, stored with the tokens it was read under
+ * - `{prefix}:{conn:table}:pk:r` — the cached row, stored with the tokens it was read under
  *   (`token\tepoch\tgeneration\tjson`).
  *
  * Each table also has an insert epoch (`{prefix}:{conn:table}:e`, same format) that validates
@@ -195,7 +197,7 @@ final class RowCache
     /** @var array<string, string> script => sha1 */
     private array $shas = [];
 
-    /** @var WeakMap<Redis, true> connections whose server instance was checked */
+    /** @var WeakMap<Redis|RedisCluster, true> connections whose server instance was checked */
     private WeakMap $verified;
 
     /** @var list<string> */
@@ -222,13 +224,13 @@ final class RowCache
      *
      * @template T
      *
-     * @param callable(Redis): T $fn
+     * @param callable(Redis|RedisCluster): T $fn
      *
      * @return T
      */
     private function connection(callable $fn): mixed
     {
-        return $this->redis->withConnection(function (Redis $r) use ($fn): mixed {
+        return $this->redis->withConnection(function (Redis|RedisCluster $r) use ($fn): mixed {
             if (!isset($this->verified[$r])) {
                 $this->verify($r);
                 $this->verified[$r] = true;
@@ -238,29 +240,69 @@ final class RowCache
         });
     }
 
-    private function verify(Redis $redis): void
+    /**
+     * Runs `$fn` for the keys on one connection: all at once on a single server; per hash tag on
+     * a Redis Cluster, where a script may only touch keys of one slot (every key of a table shares
+     * the table's tag, so this is one call per table).
+     *
+     * @param list<string>                                       $keys
+     * @param callable(Redis|RedisCluster, list<string>): void   $fn
+     */
+    private function perSlot(array $keys, callable $fn): void
     {
-        $info = $redis->info('server');
-        $runId = is_array($info) && is_string($info['run_id'] ?? null) ? $info['run_id'] : '';
-        $fenceKey = $this->config->prefix . ':{' . rawurlencode($this->connection) . '}:fence';
-        if ($runId !== '' && $redis->get($fenceKey) === $runId) {
+        $this->connection(static function (Redis|RedisCluster $r) use ($keys, $fn): void {
+            if (!$r instanceof RedisCluster) {
+                $fn($r, $keys);
+
+                return;
+            }
+            $groups = [];
+            foreach ($keys as $key) {
+                $open = strpos($key, '{');
+                $close = $open === false ? false : strpos($key, '}', $open + 1);
+                $groups[$open === false || $close === false ? $key : substr($key, $open, $close - $open + 1)][] = $key;
+            }
+            foreach ($groups as $group) {
+                $fn($r, $group);
+            }
+        });
+    }
+
+    /**
+     * Per table: compares the `run_id` of the server holding the table's keys with the one stored
+     * next to them when the cache was last known to be complete. A different id (restart without
+     * the latest data, failover to a replica) retires the table's entries.
+     */
+    private function verify(Redis|RedisCluster $redis): void
+    {
+        if ($this->tables === []) {
             return;
         }
-        $keys = [];
+        $fences = [];
         foreach ($this->tables as $table) {
-            $keys[] = $this->generationKey($table);
-            $keys[] = $this->epochKey($table);
+            $fences[] = $this->tableTag($table) . ':fence';
         }
-        if ($keys !== []) {
-            $args = ['invalidate', (string) $this->config->lockTtl, (string) $this->versionTtl()];
-            foreach ($keys as $ignored) {
-                $args[] = self::token();
+        $stored = $redis->mget($fences);
+        $stored = is_array($stored) ? array_values($stored) : [];
+        $single = null;
+        foreach ($this->tables as $i => $table) {
+            // On a cluster each table lives on the node owning its hash tag; ask that node.
+            $runId = $redis instanceof RedisCluster
+                ? self::runId($redis->info($fences[$i], 'server'))
+                : ($single ??= self::runId($redis->info('server')));
+            if ($runId !== '' && ($stored[$i] ?? false) === $runId) {
+                continue;
             }
-            $this->script($redis, self::PUBLISH, $keys, $args);
+            $this->script($redis, self::PUBLISH, [$this->generationKey($table), $this->epochKey($table)], ['invalidate', (string) $this->config->lockTtl, (string) $this->versionTtl(), self::token(), self::token()]);
+            if ($runId !== '') {
+                $redis->set($fences[$i], $runId);
+            }
         }
-        if ($runId !== '') {
-            $redis->set($fenceKey, $runId);
-        }
+    }
+
+    private static function runId(mixed $info): string
+    {
+        return is_array($info) && is_string($info['run_id'] ?? null) ? $info['run_id'] : '';
     }
 
     /**
@@ -282,7 +324,7 @@ final class RowCache
         }
         $redisKeys[] = $this->epochKey($table);
         $redisKeys[] = $this->generationKey($table);
-        $values = $this->connection(static fn(Redis $r): mixed => $r->mget($redisKeys));
+        $values = $this->connection(static fn(Redis|RedisCluster $r): mixed => $r->mget($redisKeys));
         $values = is_array($values) ? $values : [];
         $epoch = self::parseVersion($values[count($redisKeys) - 2] ?? false);
         $generation = self::parseVersion($values[count($redisKeys) - 1] ?? false);
@@ -336,7 +378,7 @@ final class RowCache
         if ($commands === []) {
             return;
         }
-        $this->connection(function (Redis $r) use ($commands): void {
+        $this->connection(function (Redis|RedisCluster $r) use ($commands): void {
             foreach ($commands as [$keys, $args]) {
                 $this->script($r, self::FILL, $keys, $args);
             }
@@ -354,11 +396,13 @@ final class RowCache
         if ($versionKeys === []) {
             return;
         }
-        $args = [(string) $this->config->lockTtl];
-        foreach ($versionKeys as $ignored) {
-            $args[] = self::token();
-        }
-        $this->connection(fn(Redis $r): mixed => $this->script($r, self::MARK, $versionKeys, $args));
+        $this->perSlot($versionKeys, function (Redis|RedisCluster $r, array $keys): void {
+            $args = [(string) $this->config->lockTtl];
+            foreach ($keys as $ignored) {
+                $args[] = self::token();
+            }
+            $this->script($r, self::MARK, $keys, $args);
+        });
     }
 
     /**
@@ -392,7 +436,9 @@ final class RowCache
         if ($versionKeys === []) {
             return;
         }
-        $this->connection(fn(Redis $r): mixed => $this->script($r, self::EXTEND, $versionKeys, [(string) $this->config->lockTtl]));
+        $this->perSlot($versionKeys, function (Redis|RedisCluster $r, array $keys): void {
+            $this->script($r, self::EXTEND, $keys, [(string) $this->config->lockTtl]);
+        });
     }
 
     /**
@@ -414,7 +460,7 @@ final class RowCache
      */
     public function lookupQuery(string $queryKey, array $dependencies): QueryLookup
     {
-        $values = $this->connection(static fn(Redis $r): mixed => $r->mget([$queryKey, ...$dependencies]));
+        $values = $this->connection(static fn(Redis|RedisCluster $r): mixed => $r->mget([$queryKey, ...$dependencies]));
         $values = is_array($values) ? $values : [];
         $tokens = [];
         foreach ($dependencies as $i => $ignored) {
@@ -460,7 +506,7 @@ final class RowCache
             $args[] = $lookup->tokens[$i] ?? '';
             $args[] = self::token();
         }
-        $this->connection(fn(Redis $r): mixed => $this->script($r, self::FILL_QUERY, [$queryKey, ...$dependencies], $args));
+        $this->connection(fn(Redis|RedisCluster $r): mixed => $this->script($r, self::FILL_QUERY, [$queryKey, ...$dependencies], $args));
     }
 
     public function queryKey(string $table, string $hash): string
@@ -525,11 +571,13 @@ final class RowCache
         if ($versionKeys === []) {
             return;
         }
-        $args = [$mode, (string) $this->config->lockTtl, (string) $this->versionTtl()];
-        foreach ($versionKeys as $ignored) {
-            $args[] = self::token();
-        }
-        $this->connection(fn(Redis $r): mixed => $this->script($r, self::PUBLISH, $versionKeys, $args));
+        $this->perSlot($versionKeys, function (Redis|RedisCluster $r, array $keys) use ($mode): void {
+            $args = [$mode, (string) $this->config->lockTtl, (string) $this->versionTtl()];
+            foreach ($keys as $ignored) {
+                $args[] = self::token();
+            }
+            $this->script($r, self::PUBLISH, $keys, $args);
+        });
     }
 
     /**
@@ -624,7 +672,7 @@ final class RowCache
      * @param list<string> $keys
      * @param list<string> $args
      */
-    private function script(Redis $redis, string $script, array $keys, array $args): mixed
+    private function script(Redis|RedisCluster $redis, string $script, array $keys, array $args): mixed
     {
         $sha = $this->shas[$script] ??= sha1($script);
         $result = $redis->evalsha($sha, array_merge($keys, $args), count($keys));
@@ -641,8 +689,10 @@ final class RowCache
     /** @param list<int|string> $key */
     private function tag(string $table, array $key): string
     {
-        return $this->config->prefix . ':{' . rawurlencode($this->connection) . ':' . rawurlencode($table) . ':'
-            . implode(',', array_map(static fn(int|string $v): string => rawurlencode(is_int($v) ? (string) $v : $v), $key)) . '}';
+        // The row key carries the table's hash tag: a lookup (row + table keys in one MGET) and
+        // every script stay within one slot on a Redis Cluster.
+        return $this->tableTag($table) . ':'
+            . implode(',', array_map(static fn(int|string $v): string => rawurlencode(is_int($v) ? (string) $v : $v), $key));
     }
 
     private function versionTtl(): int

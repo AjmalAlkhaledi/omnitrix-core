@@ -6,6 +6,7 @@ namespace Omnitrix\Facades;
 
 use Omnitrix\Core\Redis\RedisClient;
 use Redis as PhpRedis;
+use RedisCluster;
 
 /**
  * Redis access (documentation: Async & services → Redis and cache). Typed helpers for common commands; `command()` for the
@@ -51,7 +52,7 @@ final class Redis extends Facade
 
     /**
      * @template T
-     * @param callable(PhpRedis): T $fn
+     * @param callable(PhpRedis|RedisCluster): T $fn
      * @return T
      */
     public static function withConnection(callable $fn): mixed
@@ -60,7 +61,7 @@ final class Redis extends Facade
     }
 
     /**
-     * @param callable(PhpRedis): void $commands
+     * @param callable(PhpRedis|RedisCluster): void $commands
      * @return list<mixed>
      */
     public static function pipeline(callable $commands): array
@@ -69,7 +70,7 @@ final class Redis extends Facade
     }
 
     /**
-     * @param callable(PhpRedis): void $commands
+     * @param callable(PhpRedis|RedisCluster): void $commands
      * @return list<mixed>
      */
     public static function transaction(callable $commands): array

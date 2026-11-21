@@ -6,6 +6,7 @@ namespace Omnitrix\Core\Redis;
 
 use Omnitrix\Core\Runtime\Config\InvalidConfigurationException;
 
+use function array_is_list;
 use function array_keys;
 use function implode;
 use function in_array;
@@ -13,11 +14,12 @@ use function is_array;
 use function is_float;
 use function is_int;
 use function is_string;
+use function preg_match;
 
 /** Validated `redis` configuration section. */
 final readonly class RedisConfig
 {
-    private const array KNOWN = ['host', 'port', 'username', 'password', 'database', 'timeout', 'read_timeout', 'prefix', 'pool'];
+    private const array KNOWN = ['host', 'port', 'cluster', 'username', 'password', 'database', 'timeout', 'read_timeout', 'prefix', 'pool'];
 
     private const array KNOWN_POOL = ['max', 'acquire_timeout', 'idle_timeout', 'validation_interval'];
 
@@ -37,7 +39,19 @@ final readonly class RedisConfig
         public float $poolAcquireTimeout,
         public float $poolIdleTimeout,
         public float $poolValidationInterval,
+        /**
+         * Redis Cluster seed nodes (`host:port`); empty for a single server. With seeds, `host`
+         * and `port` are ignored and `database` must be 0.
+         *
+         * @var list<string>
+         */
+        public array $cluster = [],
     ) {}
+
+    public function isCluster(): bool
+    {
+        return $this->cluster !== [];
+    }
 
     /**
      * @param array<string, mixed> $config
@@ -70,12 +84,28 @@ final readonly class RedisConfig
         $username = $username === '' ? null : $username;
         $password = $password === '' ? null : $password;
 
+        $cluster = $config['cluster'] ?? [];
+        if (!is_array($cluster) || !array_is_list($cluster)) {
+            throw InvalidConfigurationException::at('redis.cluster', 'expected a list of "host:port" seed nodes');
+        }
+        $seeds = [];
+        foreach ($cluster as $i => $seed) {
+            if (!is_string($seed) || preg_match('/^[^\s:]+:\d{1,5}$/', $seed) !== 1) {
+                throw InvalidConfigurationException::at("redis.cluster.{$i}", 'expected "host:port"');
+            }
+            $seeds[] = $seed;
+        }
+        $database = self::int($config, 'database', 0, 0, 255);
+        if ($seeds !== [] && $database !== 0) {
+            throw InvalidConfigurationException::at('redis.database', 'Redis Cluster has only database 0');
+        }
+
         return new self(
             host: self::string($config, 'host', '127.0.0.1'),
             port: self::int($config, 'port', 6379, 1, 65535),
             username: $username,
             password: $password,
-            database: self::int($config, 'database', 0, 0, 255),
+            database: $database,
             timeout: self::float($config, 'timeout', 2.0, 0.001, 300.0),
             readTimeout: self::float($config, 'read_timeout', 5.0, 0.0, 86400.0),
             prefix: self::string($config, 'prefix', '', true),
@@ -83,6 +113,7 @@ final readonly class RedisConfig
             poolAcquireTimeout: self::float($pool, 'acquire_timeout', 3.0, 0.001, 3600.0, 'pool.'),
             poolIdleTimeout: self::float($pool, 'idle_timeout', 120.0, 0.0, 86400.0, 'pool.'),
             poolValidationInterval: self::float($pool, 'validation_interval', 30.0, 0.0, 86400.0, 'pool.'),
+            cluster: $seeds,
         );
     }
 

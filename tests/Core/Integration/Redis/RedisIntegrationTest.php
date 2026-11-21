@@ -18,6 +18,7 @@ use Omnitrix\Core\Tests\Support\Services;
 use Omnitrix\Core\Tests\Support\TestCase;
 use PHPUnit\Framework\Attributes\CoversNothing;
 use Redis;
+use RedisCluster;
 
 use function dirname;
 use function hrtime;
@@ -46,7 +47,7 @@ final class RedisIntegrationTest extends TestCase
     {
         if ($this->client !== null) {
             try {
-                $this->client->withConnection(static fn(Redis $r) => $r->flushDB());
+                $this->client->withConnection(static fn(Redis|RedisCluster $r) => $r->flushDB());
             } catch (ConnectionException) {
             }
             $this->client->close();
@@ -96,7 +97,7 @@ final class RedisIntegrationTest extends TestCase
     {
         $r = $this->client();
         $t = hrtime(true);
-        $replies = $r->pipeline(static function (Redis $p): void {
+        $replies = $r->pipeline(static function (Redis|RedisCluster $p): void {
             for ($i = 0; $i < 1000; $i++) {
                 $p->set("p{$i}", (string) $i);
             }
@@ -106,7 +107,7 @@ final class RedisIntegrationTest extends TestCase
         self::assertSame('999', $replies[1000]);
         self::assertLessThan(0.5, (hrtime(true) - $t) / 1e9, '1000 commands in one round trip');
 
-        $replies = $r->transaction(static function (Redis $m): void {
+        $replies = $r->transaction(static function (Redis|RedisCluster $m): void {
             $m->incr('tx');
             $m->incr('tx');
             $m->get('tx');
@@ -176,7 +177,7 @@ final class RedisIntegrationTest extends TestCase
         self::assertSame('ok', $r->command('ECHO', ['ok']), 'a fresh connection serves the next command');
 
         [$results] = self::runConcurrently([
-            'holder' => static fn(): mixed => $r->withConnection(static function (Redis $c): string {
+            'holder' => static fn(): mixed => $r->withConnection(static function (Redis|RedisCluster $c): string {
                 Sleep::milliseconds(600);
 
                 return 'held';
