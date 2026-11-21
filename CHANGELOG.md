@@ -6,9 +6,9 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
-## [0.2.0-beta.1] - 2026-11-21
+## [0.2.0] - 2026-11-21
 
-Pre-release of 0.2.0 for trials in real applications; the API may still change before 0.2.0.
+Tried as 0.2.0-beta.1 (2026-11-21) in an application from the template before this release.
 
 0.x releases may change behaviour between minor versions: applications pinned to `^0.1` stay on
 0.1.x; the application template moves to `^0.2` with this release.
@@ -38,6 +38,17 @@ Pre-release of 0.2.0 for trials in real applications; the API may still change b
 - `DB::writing()` for raw SQL writes to cached tables, `DB::invalidate()` for rows changed
   outside the application and `Database::flushCache()` for table-level changes.
 - Cache statistics per connection (`Database::cacheStats()`): hits, misses, bypassed reads, errors.
+
+### Changed
+
+- A write refused by the row cache in strict mode (`CacheUnavailableException`) answers
+  `503 Service Unavailable` with `Retry-After: 1` instead of 500: it did not run and can be retried.
+
+### Fixed
+
+- `/metrics` output is valid Prometheus text: one `# TYPE` line per metric family (it named every
+  labelled series before), all series of a family on adjacent lines, and `*_total` families typed
+  as counters.
 
 ## [0.1.1] - 2026-11-14
 

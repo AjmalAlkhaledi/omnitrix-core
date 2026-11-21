@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Omnitrix\Tests\Unit\Http;
 
 use Omnitrix\Application;
+use Omnitrix\Core\Database\Cache\CacheUnavailableException;
 use Omnitrix\Core\Http\Server\IncomingRequest;
 use Omnitrix\Core\Http\Server\ResponseWriter;
 use Omnitrix\Core\Runtime\Config\InvalidConfigurationException;
@@ -144,6 +145,15 @@ final class HttpKernelTest extends TestCase
         self::assertStringContainsString('"exception":"RuntimeException"', $response->getBody());
         self::assertStringContainsString('"detail":"why"', $response->getBody());
         self::assertStringContainsString('"trace":[', $response->getBody());
+    }
+
+    public function testAWriteRefusedByAnUnreachableRowCacheIsRetryable(): void
+    {
+        $response = (new ErrorResponseFactory(false))->fromThrowable(new CacheUnavailableException('internal detail'), 'rid');
+        self::assertSame(503, $response->getStatus());
+        self::assertSame('1', $response->getHeader('Retry-After'));
+        self::assertStringContainsString('"message":"Service Unavailable"', $response->getBody());
+        self::assertStringNotContainsString('internal detail', $response->getBody(), 'no internals without debug');
     }
 
     public function testApplicationValidatesItsOwnSections(): void

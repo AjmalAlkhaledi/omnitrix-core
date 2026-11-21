@@ -8,6 +8,8 @@ use Omnitrix\Core\Observability\MetricsRegistry;
 use Omnitrix\Core\Tests\Support\TestCase;
 use PHPUnit\Framework\Attributes\CoversClass;
 
+use function substr_count;
+
 #[CoversClass(MetricsRegistry::class)]
 final class MetricsRegistryTest extends TestCase
 {
@@ -29,5 +31,24 @@ final class MetricsRegistryTest extends TestCase
         self::assertStringContainsString('omnitrix_http_request_duration_seconds_sum{route="/users/{id}",method="GET",status="200"} 0.203000', $text);
         self::assertStringContainsString('omnitrix_event_loop_lag_ms 1.5', $text);
         self::assertSame(3, $m->maxSeen());
+    }
+
+    public function testLabelledSeriesShareOneTypeLinePerFamily(): void
+    {
+        $text = (new MetricsRegistry(8))->render([
+            'omnitrix_db_pool_size{connection="a",worker="0"}' => 2,
+            'omnitrix_db_cache_hits_total{connection="a",worker="0"}' => 5,
+            'omnitrix_db_pool_size{connection="b",worker="0"}' => 3,
+            'omnitrix_db_cache_hits_total{connection="b",worker="0"}' => 7,
+        ]);
+
+        self::assertStringNotContainsString('# TYPE omnitrix_db_pool_size{', $text, 'TYPE lines name the family, not a series');
+        self::assertSame(1, substr_count($text, '# TYPE omnitrix_db_pool_size gauge'));
+        self::assertSame(1, substr_count($text, '# TYPE omnitrix_db_cache_hits_total counter'), '*_total families are counters');
+        self::assertStringContainsString(
+            "# TYPE omnitrix_db_pool_size gauge\nomnitrix_db_pool_size{connection=\"a\",worker=\"0\"} 2\nomnitrix_db_pool_size{connection=\"b\",worker=\"0\"} 3\n",
+            $text,
+            'all series of a family are adjacent',
+        );
     }
 }

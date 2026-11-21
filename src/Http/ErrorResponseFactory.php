@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Omnitrix\Http;
 
+use Omnitrix\Core\Database\Cache\CacheUnavailableException;
 use Omnitrix\Core\Http\HttpErrorInterface;
 use Omnitrix\Core\Http\Status;
 use Throwable;
@@ -16,7 +17,7 @@ use function explode;
  *
  * HTTP errors (`HttpException` and any {@see HttpErrorInterface}) expose their status, headers,
  * safe message and details. Everything else
- * becomes a 500 whose body carries only the generic phrase and the request id — unless debug
+ * becomes a 500 (503 for a write refused by an unreachable row cache) whose body carries only the generic phrase and the request id — unless debug
  * mode is on, in which case class, message and a trimmed trace are included (never enable in
  * production).
  */
@@ -36,7 +37,10 @@ final class ErrorResponseFactory
             return $response;
         }
 
-        $error = ['status' => Status::INTERNAL_SERVER_ERROR, 'message' => Status::phrase(Status::INTERNAL_SERVER_ERROR)];
+        // A write refused because the row cache is unreachable (strict mode) did not run and can
+        // be retried: 503 lets clients and load balancers do so.
+        $status = $e instanceof CacheUnavailableException ? Status::SERVICE_UNAVAILABLE : Status::INTERNAL_SERVER_ERROR;
+        $error = ['status' => $status, 'message' => Status::phrase($status)];
         if ($this->debug) {
             $error['exception'] = $e::class;
             $error['detail'] = $e->getMessage();
@@ -44,7 +48,9 @@ final class ErrorResponseFactory
             $error['trace'] = array_slice(explode("\n", $e->getTraceAsString()), 0, 15);
         }
 
-        return Response::json(['error' => $error, 'request_id' => $requestId], Status::INTERNAL_SERVER_ERROR);
+        $response = Response::json(['error' => $error, 'request_id' => $requestId], $status);
+
+        return $status === Status::SERVICE_UNAVAILABLE ? $response->header('Retry-After', '1') : $response;
     }
 
     public function isDebug(): bool

@@ -6,6 +6,7 @@ namespace Omnitrix\Core\Observability;
 
 use OpenSwoole\Table;
 
+use function array_push;
 use function count;
 use function explode;
 use function implode;
@@ -14,8 +15,11 @@ use function is_string;
 use function max;
 use function md5;
 use function sprintf;
+use function str_ends_with;
 use function str_replace;
 use function strlen;
+use function strpos;
+use function substr;
 
 /**
  * Request metrics in OpenSwoole shared memory: every worker records into the same table (create
@@ -119,9 +123,16 @@ final class MetricsRegistry
             $lines[] = sprintf('omnitrix_http_request_duration_seconds_sum{%s} %.6F', self::labels($s), $s['sum']);
             $lines[] = sprintf('omnitrix_http_request_duration_seconds_count{%s} %d', self::labels($s), $s['count']);
         }
-        foreach ($gauges as $name => $value) {
-            $lines[] = '# TYPE ' . $name . ' gauge';
-            $lines[] = $name . ' ' . $value;
+        // One TYPE line per metric family (the name without labels), with every series of the
+        // family on adjacent lines, as the exposition format requires. `*_total` names are counters.
+        $families = [];
+        foreach ($gauges as $series => $value) {
+            $brace = strpos($series, '{');
+            $families[$brace === false ? $series : substr($series, 0, $brace)][] = $series . ' ' . $value;
+        }
+        foreach ($families as $family => $samples) {
+            $lines[] = '# TYPE ' . $family . (str_ends_with($family, '_total') ? ' counter' : ' gauge');
+            array_push($lines, ...$samples);
         }
 
         return implode("\n", $lines) . "\n";
