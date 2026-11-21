@@ -16,7 +16,8 @@ All notable changes to this project are documented in this file. The format foll
 - **Redis Cluster** (`redis.cluster` seed nodes): client, cache, queue (per-queue hash tag), rate
   limiter and the database row/query cache (per-table hash tag, restart check per node).
 - MySQL 8.4 LTS in CI next to 8.0.
-- **PostgreSQL** driver (`driver => 'pgsql'`): query builder (identity keys through `RETURNING`,
+- **PostgreSQL** driver (`driver => 'pgsql'`) on OpenSwoole's coroutine PostgreSQL client (OpenSwoole
+  built `--with-postgres`; pdo_pgsql would block the worker): query builder (identity keys through `RETURNING`,
   `UPDATE`/`DELETE` with `ORDER BY`/`LIMIT` through `ctid`), schema builder and migrations (each
   migration runs in a transaction), `migrate` creating a missing database, error classification by
   SQLSTATE, `statement_timeout`, and the row/query cache (foreign keys, PL/pgSQL triggers, text

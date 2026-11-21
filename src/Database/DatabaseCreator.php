@@ -40,6 +40,9 @@ final class DatabaseCreator
     public static function isUnknownDatabase(Throwable $error): bool
     {
         for ($e = $error; $e !== null; $e = $e->getPrevious()) {
+            if (str_contains($e->getMessage(), 'SQLSTATE[3D000]')) {
+                return true; // PostgreSQL coroutine client: "database … does not exist"
+            }
             if (!$e instanceof PDOException) {
                 continue;
             }

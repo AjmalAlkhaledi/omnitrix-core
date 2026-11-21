@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Omnitrix\Core\Database\Exception;
 
 use PDOException;
+use Throwable;
 
 use function count;
 use function in_array;
@@ -30,7 +31,17 @@ final class ErrorClassifier
     public static function classify(PDOException $e, string $sql = '', array $bindings = []): DatabaseException
     {
         [$sqlState, $driverCode, $driverMessage] = self::errorInfo($e);
-        $message = $driverMessage !== '' ? $driverMessage : $e->getMessage();
+
+        return self::fromParts($sqlState, $driverCode, $driverMessage !== '' ? $driverMessage : $e->getMessage(), $sql, $bindings, $e);
+    }
+
+    /**
+     * Classifies an error reported without a PDOException (the coroutine PostgreSQL client).
+     *
+     * @param array<mixed> $bindings
+     */
+    public static function fromParts(?string $sqlState, int $driverCode, string $message, string $sql = '', array $bindings = [], ?Throwable $e = null): DatabaseException
+    {
         $described = $sql === '' ? $message : $message . ' — ' . QueryException::describe($sql, $bindings);
 
         if (self::isConnectionError($sqlState, $driverCode, $message)) {

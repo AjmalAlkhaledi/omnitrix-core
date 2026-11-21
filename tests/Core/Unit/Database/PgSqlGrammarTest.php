@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Omnitrix\Core\Tests\Unit\Database;
 
 use Closure;
+use Omnitrix\Core\Database\Driver\PostgreSQL\PgSqlConnection;
 use Omnitrix\Core\Database\Driver\PostgreSQL\PgSqlGrammar;
 use Omnitrix\Core\Database\Query\Builder;
 use Omnitrix\Core\Database\Query\QueryExecutorInterface;
@@ -16,6 +17,7 @@ use function end;
 
 /** SQL the query builder produces for PostgreSQL. */
 #[CoversClass(PgSqlGrammar::class)]
+#[CoversClass(PgSqlConnection::class)]
 #[CoversClass(Builder::class)]
 final class PgSqlGrammarTest extends TestCase
 {
@@ -48,6 +50,14 @@ final class PgSqlGrammarTest extends TestCase
 
         $this->builder()->where('id', 1)->update(['status' => 'x']);
         self::assertSame('update "users" set "status" = ? where "id" = ?', $this->last()[0], 'unlimited writes are unchanged');
+    }
+
+    public function testPlaceholdersAreNumberedOutsideLiteralsAndComments(): void
+    {
+        self::assertSame('select * from "t" where a = $1 and b in ($2, $3)', PgSqlConnection::numberPlaceholders('select * from "t" where a = ? and b in (?, ?)'));
+        self::assertSame("select '?', 'it''s ?', \"col?\" from t where x = \$1", PgSqlConnection::numberPlaceholders("select '?', 'it''s ?', \"col?\" from t where x = ?"));
+        self::assertSame("select \$\$ ? \$\$, \$fn\$ ? \$fn\$ -- ?\n, \$1 /* ? */ , \$2", PgSqlConnection::numberPlaceholders("select \$\$ ? \$\$, \$fn\$ ? \$fn\$ -- ?\n, ? /* ? */ , ?"));
+        self::assertSame('select $1::int', PgSqlConnection::numberPlaceholders('select ?::int'));
     }
 
     private function builder(string $table = 'users'): Builder
