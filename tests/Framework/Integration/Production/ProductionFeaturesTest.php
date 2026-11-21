@@ -18,6 +18,7 @@ use function is_int;
 use function is_string;
 use function json_decode;
 use function json_encode;
+use function ksort;
 use function preg_match;
 use function substr_count;
 
@@ -119,7 +120,9 @@ final class ProductionFeaturesTest extends TestCase
             $tasks[$i] = fn(): int => $this->request('GET', '/api/limited', ['Authorization' => 'Bearer user-' . $i])['status'];
         }
         [$statuses] = self::runConcurrently($tasks);
-        self::assertSame([200 => 5, 429 => 7], array_count_values($statuses), 'exactly the limit is allowed, shared across both workers');
+        $counts = array_count_values($statuses);
+        ksort($counts); // the order of the counts depends on which answer arrived first
+        self::assertSame([200 => 5, 429 => 7], $counts, 'exactly the limit is allowed, shared across both workers');
         $blocked = $this->request('GET', '/api/limited', ['Authorization' => 'Bearer user-1']);
         self::assertSame(429, $blocked['status']);
         self::assertGreaterThanOrEqual(1, (int) $blocked['headers']['retry-after']);
