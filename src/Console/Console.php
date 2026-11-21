@@ -80,6 +80,7 @@ final class Console
             new Commands\MakeEventCommand($this),
             new Commands\MakeListenerCommand($this),
             new Commands\MakeSeederCommand($this),
+            new Commands\MakeFactoryCommand($this),
             ...$this->extra,
         ] as $command) {
             $command->setConsole($this);

@@ -75,6 +75,7 @@ final class ConsoleTest extends TestCase
         self::assertSame(0, $tester->run(['command' => 'make:listener', 'name' => 'SendShipmentEmail', '--event' => 'OrderShipped', '--queued' => true]));
         self::assertStringContainsString("\App\Events\OrderShipped::class => [\App\Listeners\SendShipmentEmail::class]", $tester->getDisplay());
         self::assertSame(0, $tester->run(['command' => 'make:seeder', 'name' => 'UserSeeder']));
+        self::assertSame(0, $tester->run(['command' => 'make:factory', 'name' => 'BlogPostFactory']));
         self::assertSame(0, $tester->run(['command' => 'make:migration', 'name' => 'add_status_to_orders', '--table' => 'orders']));
 
         $controller = (string) file_get_contents($this->project . '/src/Controllers/Admin/UserController.php');
@@ -100,7 +101,8 @@ final class ConsoleTest extends TestCase
             $found = glob($this->project . $pattern);
             $files = [...$files, ...($found === false ? [] : $found)];
         }
-        self::assertCount(9, $files);
+        self::assertCount(10, $files);
+        self::assertStringContainsString('protected string $model = BlogPost::class;', (string) file_get_contents($this->project . '/database/factories/BlogPostFactory.php'));
         foreach ($files as $file) {
             // The exit status of exec() is not reliable under the runtime hooks; check the message.
             $out = [];

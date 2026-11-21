@@ -27,6 +27,9 @@ All notable changes to this project are documented in this file. The format foll
   interface or name with wildcards; priorities; queued listeners (`ShouldQueue`, run by
   `queue:work`); `ShouldDispatchAfterCommit`; model events (`creating` … `deleted`, observers,
   cancelling); `Event::fake()`; `make:event`, `make:listener`.
+- **Factories**: `Factory` (definition, `count`, `state`, `sequence`, `for`, `has`, `afterMaking`,
+  `afterCreating`, `make`, `create`, `raw`), `HasFactory`, a built-in fake-data generator
+  (`unique()`, seeding); `make:factory`.
 - **E-mail verification** (`MustVerifyEmail`, signed expiring links, `EnsureEmailIsVerified`,
   `Verified` event) and **password reset** (`Password` broker with hashed single-use tokens,
   throttling, configurable link URL, `PasswordReset` event); `AuthRoutes::verification()` and
