@@ -6,6 +6,11 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+## [0.3.0-beta.1] - 2026-11-21
+
+Pre-release of 0.3.0 for trials in real applications; the API may still change before 0.3.0.
+Upgrade notes: see Reference → Versioning and upgrades in the documentation.
+
 ### Added
 
 - Row and query cache follow **triggers**: writes to a table whose triggers write to cached tables
