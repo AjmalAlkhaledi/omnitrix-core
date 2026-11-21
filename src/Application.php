@@ -9,6 +9,7 @@ use LogicException;
 use Omnitrix\Auth\Access\AuthorizationResponse;
 use Omnitrix\Auth\Access\Gate;
 use Omnitrix\Auth\AuthManager;
+use Omnitrix\Auth\Passwords\PasswordBroker;
 use Omnitrix\Contracts\Authenticatable;
 use Omnitrix\Contracts\Encrypter;
 use Omnitrix\Contracts\EventDispatcher;
@@ -78,6 +79,7 @@ use function is_file;
 use function is_float;
 use function is_int;
 use function is_string;
+use function rtrim;
 
 use const SIGTERM;
 
@@ -755,6 +757,10 @@ final class Application
         }
 
         $authManager = $container->has(AuthManager::class) ? $container->get(AuthManager::class) : null;
+        if ($authManager instanceof AuthManager && is_array($auth) && $container->has(DatabaseManager::class)) {
+            /** @var array<string, mixed> $auth */
+            $container->instance(PasswordBroker::class, $this->passwordBroker($authManager, $auth, $app, $container));
+        }
         $gate = new Gate($authManager instanceof AuthManager ? static fn(): ?Authenticatable => $authManager->guard()->user() : null);
         $configured = is_array($auth) && is_array($auth['policies'] ?? null) ? $auth['policies'] : [];
         foreach ($configured + $this->policies as $model => $policy) {
@@ -802,6 +808,36 @@ final class Application
             }
             $container->instance(RateLimiter::class, $limiter);
         }
+    }
+
+    /**
+     * @param array<string, mixed> $authConfig
+     * @param array<string, mixed> $app
+     */
+    private function passwordBroker(AuthManager $auth, array $authConfig, array $app, Container $container): PasswordBroker
+    {
+        $passwords = is_array($authConfig['passwords'] ?? null) ? $authConfig['passwords'] : [];
+        $key = is_string($app['key'] ?? null) ? $app['key'] : '';
+        $base = is_string($app['url'] ?? null) ? rtrim($app['url'], '/') : '';
+        $url = is_string($passwords['url'] ?? null) ? $passwords['url'] : $base . '/reset-password?token={token}&email={email}';
+        $int = static fn(string $name, int $default): int => is_int($passwords[$name] ?? null) ? $passwords[$name] : $default;
+        $provider = is_string($passwords['provider'] ?? null) ? $passwords['provider'] : null;
+        $manager = $container->get(DatabaseManager::class);
+        $events = $container->has(EventDispatcher::class) ? $container->get(EventDispatcher::class) : null;
+        if (!$manager instanceof DatabaseManager) {
+            throw new LogicException('Password reset needs the database');
+        }
+
+        return new PasswordBroker(
+            $auth->provider($provider),
+            $manager->connection(),
+            $key,
+            $url,
+            is_string($passwords['table'] ?? null) ? $passwords['table'] : 'password_reset_tokens',
+            $int('expire', 60),
+            $int('throttle', 60),
+            $events instanceof EventDispatcher ? $events : null,
+        );
     }
 
     /** @param array<string, mixed> $config */

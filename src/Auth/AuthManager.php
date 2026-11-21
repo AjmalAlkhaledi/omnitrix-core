@@ -90,6 +90,22 @@ final class AuthManager
             : new TokenGuard($name, $provider);
     }
 
+    /** @return class-string<Model> the user model of a guard (default guard: null) */
+    public function providerModel(?string $guard = null): string
+    {
+        $config = $this->guardConfig[$guard ?? $this->default] ?? throw new InvalidArgumentException("Auth guard '{$guard}' is not configured");
+
+        return $this->providers[$config['provider']];
+    }
+
+    /** A user provider by name (or of the default guard). */
+    public function provider(?string $name = null): ModelUserProvider
+    {
+        $model = $name === null ? $this->providerModel() : ($this->providers[$name] ?? throw new InvalidArgumentException("Auth provider '{$name}' is not configured"));
+
+        return new ModelUserProvider($model, $this->hasher);
+    }
+
     public function defaultGuard(): string
     {
         return $this->default;

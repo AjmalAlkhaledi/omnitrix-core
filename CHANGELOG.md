@@ -27,6 +27,10 @@ All notable changes to this project are documented in this file. The format foll
   interface or name with wildcards; priorities; queued listeners (`ShouldQueue`, run by
   `queue:work`); `ShouldDispatchAfterCommit`; model events (`creating` … `deleted`, observers,
   cancelling); `Event::fake()`; `make:event`, `make:listener`.
+- **E-mail verification** (`MustVerifyEmail`, signed expiring links, `EnsureEmailIsVerified`,
+  `Verified` event) and **password reset** (`Password` broker with hashed single-use tokens,
+  throttling, configurable link URL, `PasswordReset` event); `AuthRoutes::verification()` and
+  `AuthRoutes::passwordReset()` JSON endpoints.
 - **Notifications**: `Notification` classes with `mail` and `database` channels, `Notifiable` trait
   (`notify()`, `notifications()`, `unreadNotifications()`, `markAsRead()`), anonymous recipients,
   queued notifications (recipients reloaded by key in the worker), `Notification::fake()`.
