@@ -18,6 +18,7 @@ use function array_pop;
 use function count;
 use function min;
 use function random_int;
+use function spl_object_id;
 
 /**
  * Transactions with exclusive connection ownership.
@@ -49,11 +50,18 @@ final class TransactionManager
     private ?Closure $onEnd;
 
     /**
+     * Coroutine-context key of this manager: the connection name plus the instance, so two
+     * databases with the same name (two managers in one process) never share a transaction.
+     */
+    private readonly string $scope;
+
+    /**
      * @param (Closure(list<string>, bool): void)|null $onEnd receives row-cache keys to release and
      *                                                          whether the writes committed (invalidate)
      */
-    public function __construct(private readonly string $connectionName, ?Closure $onEnd = null)
+    public function __construct(string $connectionName, ?Closure $onEnd = null)
     {
+        $this->scope = $connectionName . '#' . spl_object_id($this);
         $this->onEnd = $onEnd;
     }
 
@@ -69,7 +77,7 @@ final class TransactionManager
     public function afterCommit(callable $callback): bool
     {
         $storage = Coroutine::getContext();
-        $key = self::FRAMES_KEY . $this->connectionName;
+        $key = self::FRAMES_KEY . $this->scope;
         if ($storage === null || $this->pinned() === null || !isset($storage[$key])) {
             return false;
         }
@@ -90,7 +98,7 @@ final class TransactionManager
     public function remember(array $keys): bool
     {
         $storage = Coroutine::getContext();
-        $key = self::MARKS_KEY . $this->connectionName;
+        $key = self::MARKS_KEY . $this->scope;
         if ($storage === null || $this->pinned() === null || !isset($storage[$key])) {
             return false;
         }
@@ -181,7 +189,7 @@ final class TransactionManager
         if ($storage === null) {
             return null;
         }
-        $pinned = $storage[self::PIN_KEY . $this->connectionName] ?? null;
+        $pinned = $storage[self::PIN_KEY . $this->scope] ?? null;
 
         return $pinned instanceof PooledConnection && !$pinned->isReleased() ? $pinned : null;
     }
@@ -194,12 +202,12 @@ final class TransactionManager
     private function nested(PooledConnection $connection, callable $callback): mixed
     {
         $storage = Coroutine::getContext();
-        $key = self::FRAMES_KEY . $this->connectionName;
+        $key = self::FRAMES_KEY . $this->scope;
         /** @var list<list<callable>> $frames */
         $frames = $storage !== null && isset($storage[$key]) ? $storage[$key] : [[]];
         $savepoint = 'omnitrix_sp_' . count($frames);
         $frames[] = [];
-        $marksKey = self::MARKS_KEY . $this->connectionName;
+        $marksKey = self::MARKS_KEY . $this->scope;
         if ($storage !== null) {
             $storage[$key] = $frames;
             if (isset($storage[$marksKey])) {
@@ -254,8 +262,8 @@ final class TransactionManager
     {
         $storage = Coroutine::getContext();
         if ($storage !== null) {
-            $storage[self::FRAMES_KEY . $this->connectionName] = [[]];
-            $storage[self::MARKS_KEY . $this->connectionName] = [[]];
+            $storage[self::FRAMES_KEY . $this->scope] = [[]];
+            $storage[self::MARKS_KEY . $this->scope] = [[]];
         }
     }
 
@@ -266,8 +274,8 @@ final class TransactionManager
         if ($storage === null) {
             return [[], []];
         }
-        $framesKey = self::FRAMES_KEY . $this->connectionName;
-        $marksKey = self::MARKS_KEY . $this->connectionName;
+        $framesKey = self::FRAMES_KEY . $this->scope;
+        $marksKey = self::MARKS_KEY . $this->scope;
         /** @var list<list<callable>> $frames */
         $frames = $storage[$framesKey] ?? [[]];
         /** @var list<list<string>> $levels */
@@ -304,14 +312,14 @@ final class TransactionManager
         if ($storage === null) {
             throw new TransactionException('Transactions require a coroutine context');
         }
-        $storage[self::PIN_KEY . $this->connectionName] = $connection;
+        $storage[self::PIN_KEY . $this->scope] = $connection;
     }
 
     private function unpin(): void
     {
         $storage = Coroutine::getContext();
         if ($storage !== null) {
-            unset($storage[self::PIN_KEY . $this->connectionName]);
+            unset($storage[self::PIN_KEY . $this->scope]);
         }
     }
 }

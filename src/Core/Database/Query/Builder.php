@@ -392,7 +392,8 @@ final class Builder
             if ($lookup !== null) {
                 $executor = $this->executor;
 
-                return $executor->selectByKeys($this->from, $lookup['columns'], $lookup['keys'], fn(): array => $executor->select($this->toSql(), $this->getBindings()));
+                // Conditions that are not the primary key fall back to run(): the query cache still applies.
+                return $executor->selectByKeys($this->from, $lookup['columns'], $lookup['keys'], fn(): array => $this->run($this->toSql(), $this->getBindings()));
             }
         }
 

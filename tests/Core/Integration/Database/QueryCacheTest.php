@@ -85,6 +85,27 @@ final class QueryCacheTest extends TestCase
         self::assertSame(['A1*', 'A2 edited'], $this->titles(1));
     }
 
+    public function testQueriesWithoutOrderOnATableThatAlsoHasARowCacheAreCached(): void
+    {
+        // A condition on a non-key column first looks like a key lookup; it must fall back to the
+        // query cache, not to an uncached read.
+        $manager = new DatabaseManager([
+            'driver' => 'mariadb', 'host' => Services::dbHost(), 'port' => Services::dbPort(), 'database' => self::DB,
+            'username' => Services::dbUser(), 'password' => Services::dbPassword(), 'pool' => ['min' => 0, 'max' => 2],
+            'cache' => ['tables' => ['posts'], 'queries' => ['posts' => ['user_id']], 'ttl' => 60],
+        ], null, $this->redis);
+        try {
+            $db = $manager->connection();
+            $titles = static fn(): array => array_column($db->table('posts')->where('user_id', 2)->cache(60)->get(), 'title');
+            self::assertSame(['B1'], $titles());
+            $this->behind("UPDATE posts SET title = 'behind' WHERE id = 20");
+            self::assertSame(['B1'], $titles(), 'served from the query cache');
+            self::assertSame(1, $db->cacheStats()['hits']);
+        } finally {
+            $manager->close();
+        }
+    }
+
     public function testRowsMovingInAndOutOfAResult(): void
     {
         self::assertSame(['A1', 'A2'], $this->titles(1));
