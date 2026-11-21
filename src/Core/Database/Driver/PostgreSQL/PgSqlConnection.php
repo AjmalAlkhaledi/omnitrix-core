@@ -32,6 +32,7 @@ use function sprintf;
 use function strlen;
 use function strpos;
 use function substr;
+use function trim;
 
 use const OPENSWOOLE_PGSQL_ASSOC;
 
@@ -301,9 +302,11 @@ final class PgSqlConnection implements ConnectionInterface
     /** @param array<mixed> $bindings */
     private function failure(PostgreSQL|PostgreSQLStatement $source, string $sql, array $bindings): DatabaseException
     {
-        $diag = $source->resultDiag;
+        // The client keeps the diagnostics of the last error (sqlstate, message_primary, …) on
+        // itself, also for statement errors.
+        $diag = $this->client !== null ? ($this->client->resultDiag ?? $source->resultDiag) : $source->resultDiag;
         $sqlState = is_array($diag) && is_string($diag['sqlstate'] ?? null) ? $diag['sqlstate'] : null;
-        $message = is_array($diag) && is_string($diag['message_primary'] ?? null) ? 'ERROR:  ' . $diag['message_primary'] : (is_string($source->error) && $source->error !== '' ? $source->error : 'PostgreSQL query failed');
+        $message = is_string($source->error) && $source->error !== '' ? trim($source->error) : (is_array($diag) && is_string($diag['message_primary'] ?? null) ? 'ERROR:  ' . $diag['message_primary'] : 'PostgreSQL query failed');
         $client = $this->client;
         $connectionLost = $sqlState === null && ($client === null || $client->status() !== PostgreSQL::PG_CONNECTION_OK);
         $exception = ErrorClassifier::fromParts($connectionLost ? '08006' : $sqlState, is_int($source->errCode) ? $source->errCode : 0, $message, $sql, $bindings);
