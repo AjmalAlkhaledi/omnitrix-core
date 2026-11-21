@@ -71,6 +71,9 @@ final class ConsoleTest extends TestCase
         self::assertSame(0, $tester->run(['command' => 'make:middleware', 'name' => 'RequireApiKey']));
         self::assertSame(0, $tester->run(['command' => 'make:job', 'name' => 'SendWelcomeEmail']));
         self::assertStringContainsString("'send.welcome.email' => \\App\\Jobs\\SendWelcomeEmail::class", $tester->getDisplay());
+        self::assertSame(0, $tester->run(['command' => 'make:event', 'name' => 'OrderShipped']));
+        self::assertSame(0, $tester->run(['command' => 'make:listener', 'name' => 'SendShipmentEmail', '--event' => 'OrderShipped', '--queued' => true]));
+        self::assertStringContainsString("\App\Events\OrderShipped::class => [\App\Listeners\SendShipmentEmail::class]", $tester->getDisplay());
         self::assertSame(0, $tester->run(['command' => 'make:seeder', 'name' => 'UserSeeder']));
         self::assertSame(0, $tester->run(['command' => 'make:migration', 'name' => 'add_status_to_orders', '--table' => 'orders']));
 
@@ -80,6 +83,11 @@ final class ConsoleTest extends TestCase
         self::assertStringContainsString("protected static ?string \$table = 'blog_posts';", (string) file_get_contents($this->project . '/src/Models/BlogPost.php'));
         self::assertStringContainsString('implements MiddlewareInterface', (string) file_get_contents($this->project . '/src/Middleware/RequireApiKey.php'));
         self::assertStringContainsString('namespace Database\\Seeds;', (string) file_get_contents($this->project . '/database/seeds/UserSeeder.php'));
+        self::assertStringContainsString('final readonly class OrderShipped', (string) file_get_contents($this->project . '/src/Events/OrderShipped.php'));
+        $listener = (string) file_get_contents($this->project . '/src/Listeners/SendShipmentEmail.php');
+        self::assertStringContainsString('use App\\Events\\OrderShipped;', $listener);
+        self::assertStringContainsString('final class SendShipmentEmail implements ShouldQueue', $listener);
+        self::assertStringContainsString('public function handle(OrderShipped $event): void', $listener);
         $create = glob($this->project . '/database/migrations/*_create_blog_posts_table.php');
         $alter = glob($this->project . '/database/migrations/*_add_status_to_orders.php');
         self::assertCount(1, $create === false ? [] : $create);
@@ -92,7 +100,7 @@ final class ConsoleTest extends TestCase
             $found = glob($this->project . $pattern);
             $files = [...$files, ...($found === false ? [] : $found)];
         }
-        self::assertCount(7, $files);
+        self::assertCount(9, $files);
         foreach ($files as $file) {
             // The exit status of exec() is not reliable under the runtime hooks; check the message.
             $out = [];

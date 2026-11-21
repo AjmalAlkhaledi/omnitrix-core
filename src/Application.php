@@ -7,6 +7,7 @@ namespace Omnitrix;
 use InvalidArgumentException;
 use LogicException;
 use Omnitrix\Contracts\Encrypter;
+use Omnitrix\Contracts\EventDispatcher;
 use Omnitrix\Contracts\Hasher;
 use Omnitrix\Core\Cache\Cache as CacheService;
 use Omnitrix\Core\Container\Container;
@@ -32,6 +33,7 @@ use Omnitrix\Core\Runtime\Lifecycle\ServerRuntime;
 use Omnitrix\Core\Runtime\Shutdown\ResourceRegistry;
 use Omnitrix\Core\Runtime\Worker\WorkerContext;
 use Omnitrix\Encryption\AesEncrypter;
+use Omnitrix\Events\Dispatcher;
 use Omnitrix\Facades\Facade;
 use Omnitrix\Hashing\HashManager;
 use Omnitrix\Http\ErrorResponseFactory;
@@ -89,6 +91,9 @@ final class Application
     private ?MetricsRegistry $metrics = null;
 
     private ?Container $workerContainer = null;
+
+    /** @var list<array{string|list<string>, callable|string|array{class-string, string}, int}> listeners registered with listen() */
+    private array $eventListeners = [];
 
     /** Worker timer publishing this worker's metric series. */
     private ?int $metricsTimer = null;
@@ -281,6 +286,20 @@ final class Application
     }
 
     /** @param callable(WorkerContext): void $listener */
+    /**
+     * Registers an event listener in every worker (call it in `bootstrap.php`; listeners can
+     * also be listed under `events.listen` in configuration).
+     *
+     * @param string|list<string>                              $events
+     * @param callable|string|array{class-string, string}      $listener
+     */
+    public function listen(string|array $events, callable|string|array $listener, int $priority = 0): self
+    {
+        $this->eventListeners[] = [$events, $listener, $priority];
+
+        return $this;
+    }
+
     public function onWorkerStart(callable $listener): self
     {
         $this->runtime->onWorkerStart($listener);
@@ -636,6 +655,47 @@ final class Application
                 $manager->warmUp();
             }
         }
+
+        $container->instance(EventDispatcher::class, $this->makeDispatcher($container, $config));
+    }
+
+    /** @param array<string, mixed> $config */
+    private function makeDispatcher(Container $container, array $config): Dispatcher
+    {
+        $producer = $container->has(QueueProducer::class) ? $container->get(QueueProducer::class) : null;
+        $queue = $producer instanceof QueueProducer ? $producer->dispatch(...) : null;
+        $manager = $container->has(DatabaseManager::class) ? $container->get(DatabaseManager::class) : null;
+        $deferred = $manager instanceof DatabaseManager
+            ? static function (callable $callback) use ($manager): bool {
+                $db = $manager->connection();
+                if (!$db->inTransaction()) {
+                    return false;
+                }
+                $db->afterCommit($callback);
+
+                return true;
+            }
+        : null;
+        $dispatcher = new Dispatcher($container, $queue, $deferred);
+        $events = $config['events'] ?? [];
+        $listen = is_array($events) ? ($events['listen'] ?? []) : [];
+        if (!is_array($listen)) {
+            throw InvalidConfigurationException::at('events.listen', 'expected [Event::class => [Listener::class, …]]');
+        }
+        foreach ($listen as $event => $listeners) {
+            foreach (is_array($listeners) ? $listeners : [$listeners] as $listener) {
+                if (!is_string($event) || (!is_string($listener) && !is_callable($listener) && !is_array($listener))) {
+                    throw InvalidConfigurationException::at('events.listen', 'expected [Event::class => [Listener::class, …]]');
+                }
+                /** @var callable|string|array{class-string, string} $listener */
+                $dispatcher->listen($event, $listener);
+            }
+        }
+        foreach ($this->eventListeners as [$names, $listener, $priority]) {
+            $dispatcher->listen($names, $listener, $priority);
+        }
+
+        return $dispatcher;
     }
 
     private function installHandler(): void

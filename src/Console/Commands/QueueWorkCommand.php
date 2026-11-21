@@ -6,7 +6,10 @@ namespace Omnitrix\Console\Commands;
 
 use LogicException;
 use Omnitrix\Console\Command;
+use Omnitrix\Contracts\EventDispatcher;
 use Omnitrix\Core\Queue\Job;
+use Omnitrix\Events\Dispatcher;
+use Omnitrix\Facades\Facade;
 use Omnitrix\Queue\Worker;
 use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Input\InputInterface;
@@ -54,17 +57,25 @@ final class QueueWorkCommand extends Command
         $concurrency = $this->intOption($input, 'concurrency') ?? $this->configInt('queue.concurrency', 4);
         $timeout = $this->intOption($input, 'timeout') ?? $this->configInt('queue.timeout', 60);
         $jobs = $this->config('queue.jobs', []);
-        if (!is_array($jobs) || $jobs === []) {
-            throw new LogicException("No jobs registered: add them to 'jobs' in config/queue.php");
+        if (!is_array($jobs)) {
+            throw new LogicException("'jobs' in config/queue.php must map job names to handlers");
         }
         $worker = new Worker($app->config(), queue: $queue, concurrency: $concurrency, jobTimeout: (float) $timeout, logger: $app->logger());
+        // Framework jobs (queued event listeners, …) are always handled.
+        $worker->handle(Dispatcher::QUEUED_LISTENER_JOB, static function (array $payload): void {
+            $dispatcher = Facade::container()?->get(EventDispatcher::class);
+            if (!$dispatcher instanceof Dispatcher) {
+                throw new LogicException('No event dispatcher in this worker');
+            }
+            $dispatcher->handleQueued($payload);
+        });
         foreach ($jobs as $name => $handler) {
             if (!is_string($name)) {
                 throw new LogicException('Job names in config/queue.php must be strings');
             }
             $worker->handle($name, self::resolve($name, $handler));
         }
-        $output->writeln("<info>Processing queue '{$queue}'</info> with " . count($jobs) . " job type(s), concurrency {$concurrency}. Stop with Ctrl+C.");
+        $output->writeln("<info>Processing queue '{$queue}'</info> with " . count($jobs) . " application job type(s), concurrency {$concurrency}. Stop with Ctrl+C.");
         $code = $app->withServices(static fn(): int => $worker->run());
         $stats = $worker->stats();
         $output->writeln('Stopped. processed=' . ($stats['processed'] ?? 0) . ' failed=' . ($stats['failed'] ?? 0) . ' retried=' . ($stats['retried'] ?? 0));

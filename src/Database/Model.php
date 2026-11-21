@@ -8,9 +8,11 @@ use ArrayAccess;
 use Closure;
 use DateTimeImmutable;
 use DateTimeInterface;
+use InvalidArgumentException;
 use JsonException;
 use JsonSerializable;
 use LogicException;
+use Omnitrix\Contracts\EventDispatcher;
 use Omnitrix\Core\Database\Database;
 use Omnitrix\Core\Database\Query\Builder;
 use Omnitrix\Core\Database\Query\Expression;
@@ -20,6 +22,7 @@ use Omnitrix\Database\Relations\HasMany;
 use Omnitrix\Database\Relations\HasOne;
 use Omnitrix\Database\Relations\Relation;
 use Omnitrix\Facades\DB;
+use Omnitrix\Facades\Facade;
 use Omnitrix\Support\Str;
 use ReflectionMethod;
 use ReflectionNamedType;
@@ -323,23 +326,154 @@ abstract class Model implements ArrayAccess, JsonSerializable
         return $attribute === null ? $dirty !== [] : array_key_exists($attribute, $dirty);
     }
 
+    // --- events -----------------------------------------------------------------------------
+
+    /** Events whose listeners can cancel the operation by returning false. */
+    private const array HALTING = ['saving', 'creating', 'updating', 'deleting'];
+
+    private const array EVENTS = ['saving', 'saved', 'creating', 'created', 'updating', 'updated', 'deleting', 'deleted'];
+
+    /** @var array<class-string, array<string, list<callable(static): mixed>>> listeners per model class */
+    private static array $modelListeners = [];
+
+    /**
+     * Registers a listener for one model event of this class: saving, saved, creating, created,
+     * updating, updated, deleting, deleted. A `saving`, `creating`, `updating` or `deleting`
+     * listener that returns false cancels the operation (save()/delete() return false). The
+     * events are also dispatched as `model.{event}: {class}` to the event dispatcher.
+     *
+     * @param callable(static): mixed $listener
+     */
+    public static function on(string $event, callable $listener): void
+    {
+        if (!in_array($event, self::EVENTS, true)) {
+            throw new InvalidArgumentException("Unknown model event '{$event}'");
+        }
+        self::$modelListeners[static::class][$event][] = $listener;
+    }
+
+    /** @param callable(static): mixed $listener */
+    public static function creating(callable $listener): void
+    {
+        static::on('creating', $listener);
+    }
+
+    /** @param callable(static): mixed $listener */
+    public static function created(callable $listener): void
+    {
+        static::on('created', $listener);
+    }
+
+    /** @param callable(static): mixed $listener */
+    public static function updating(callable $listener): void
+    {
+        static::on('updating', $listener);
+    }
+
+    /** @param callable(static): mixed $listener */
+    public static function updated(callable $listener): void
+    {
+        static::on('updated', $listener);
+    }
+
+    /** @param callable(static): mixed $listener */
+    public static function saving(callable $listener): void
+    {
+        static::on('saving', $listener);
+    }
+
+    /** @param callable(static): mixed $listener */
+    public static function saved(callable $listener): void
+    {
+        static::on('saved', $listener);
+    }
+
+    /** @param callable(static): mixed $listener */
+    public static function deleting(callable $listener): void
+    {
+        static::on('deleting', $listener);
+    }
+
+    /** @param callable(static): mixed $listener */
+    public static function deleted(callable $listener): void
+    {
+        static::on('deleted', $listener);
+    }
+
+    /**
+     * Registers an observer: an object (or class) whose public methods named after model events
+     * (`created(User $user)`, `deleting(User $user)`, …) become listeners.
+     */
+    public static function observe(object|string $observer): void
+    {
+        $instance = is_string($observer) ? new $observer() : $observer;
+        foreach (self::EVENTS as $event) {
+            $callable = [$instance, $event];
+            if (is_callable($callable)) {
+                static::on($event, $callable);
+            }
+        }
+    }
+
+    /** Removes the listeners of this model class (tests). */
+    public static function flushEventListeners(): void
+    {
+        unset(self::$modelListeners[static::class]);
+    }
+
+    /** Runs the listeners of `$event`; false when a halting event was cancelled. */
+    protected function fireModelEvent(string $event): bool
+    {
+        $halting = in_array($event, self::HALTING, true);
+        foreach (self::$modelListeners[static::class][$event] ?? [] as $listener) {
+            if ($listener($this) === false && $halting) {
+                return false;
+            }
+        }
+        $container = Facade::container();
+        if ($container !== null && $container->has(EventDispatcher::class)) {
+            $dispatcher = $container->get(EventDispatcher::class);
+            if ($dispatcher instanceof EventDispatcher) {
+                $name = "model.{$event}: " . static::class;
+                if ($halting) {
+                    return $dispatcher->until($name, [$this]) !== false;
+                }
+                $dispatcher->dispatch($name, [$this]);
+            }
+        }
+
+        return true;
+    }
+
     // --- persistence ------------------------------------------------------------------------
 
     /** Inserts the model, or updates the changed attributes of an existing one. */
     public function save(): bool
     {
+        if (!$this->fireModelEvent('saving')) {
+            return false;
+        }
         $now = (new DateTimeImmutable())->format('Y-m-d H:i:s');
         if ($this->exists) {
             $dirty = $this->getDirty();
             if ($dirty === []) {
                 return true;
             }
+            if (!$this->fireModelEvent('updating')) {
+                return false;
+            }
+            $dirty = $this->getDirty(); // listeners may have changed attributes
             if (static::$timestamps && !array_key_exists('updated_at', $dirty)) {
                 $this->attributes['updated_at'] = $now;
                 $dirty['updated_at'] = $now;
             }
             static::connection()->table(static::table())->where(static::$primaryKey, $this->getKey())->update($dirty);
+            $this->original = $this->attributes;
+            $this->fireModelEvent('updated');
         } else {
+            if (!$this->fireModelEvent('creating')) {
+                return false;
+            }
             if (static::$timestamps) {
                 $this->attributes['created_at'] ??= $now;
                 $this->attributes['updated_at'] ??= $now;
@@ -351,8 +485,11 @@ abstract class Model implements ArrayAccess, JsonSerializable
                 $builder->insert($this->attributes);
             }
             $this->exists = true;
+            $this->original = $this->attributes;
+            $this->fireModelEvent('created');
         }
         $this->original = $this->attributes;
+        $this->fireModelEvent('saved');
 
         return true;
     }
@@ -372,8 +509,12 @@ abstract class Model implements ArrayAccess, JsonSerializable
         if (!$this->exists) {
             return false;
         }
+        if (!$this->fireModelEvent('deleting')) {
+            return false;
+        }
         static::connection()->table(static::table())->where(static::$primaryKey, $this->getKey())->delete();
         $this->exists = false;
+        $this->fireModelEvent('deleted');
 
         return true;
     }

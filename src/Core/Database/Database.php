@@ -131,6 +131,12 @@ final class Database implements CacheAwareExecutorInterface
      * Runs `$callback` after the current transaction commits, or immediately outside a transaction.
      * Callbacks of a nested transaction that rolls back are discarded.
      */
+    /** Whether the current coroutine has a transaction open on this connection. */
+    public function inTransaction(): bool
+    {
+        return $this->transactions->inTransaction();
+    }
+
     public function afterCommit(callable $callback): void
     {
         if (!$this->transactions->afterCommit($callback)) {

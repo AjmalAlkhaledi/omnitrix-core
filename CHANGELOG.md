@@ -23,6 +23,14 @@ All notable changes to this project are documented in this file. The format foll
   SQLSTATE, `statement_timeout`, and the row/query cache (foreign keys, PL/pgSQL triggers, text
   tags for deterministic collations). `insertGetId()` takes the key column (default `id`).
 
+- **Events**: `Event` facade and `$app->listen()` / `events.listen`; listeners by class, parent class,
+  interface or name with wildcards; priorities; queued listeners (`ShouldQueue`, run by
+  `queue:work`); `ShouldDispatchAfterCommit`; model events (`creating` … `deleted`, observers,
+  cancelling); `Event::fake()`; `make:event`, `make:listener`.
+- `Omnitrix\Support\Collection` (fluent, immutable) and `collect()` on model collections.
+- `Hash` (bcrypt, argon2id) and `Crypt` (AES-256-GCM with `app.key`, key rotation) facades;
+  `php omnitrix key:generate`.
+
 ### Changed
 
 - Per-worker metrics (`omnitrix_worker_coroutines`, `omnitrix_event_loop_lag_*`,

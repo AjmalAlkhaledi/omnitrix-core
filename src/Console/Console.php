@@ -77,6 +77,8 @@ final class Console
             new Commands\MakeMigrationCommand($this),
             new Commands\MakeMiddlewareCommand($this),
             new Commands\MakeJobCommand($this),
+            new Commands\MakeEventCommand($this),
+            new Commands\MakeListenerCommand($this),
             new Commands\MakeSeederCommand($this),
             ...$this->extra,
         ] as $command) {
