@@ -38,7 +38,7 @@
         "friendsofphp/php-cs-fixer": "^3.95",
         "phpstan/phpstan": "^2.3",
         "phpstan/phpstan-strict-rules": "^2.0",
-        "phpunit/phpunit": "^12.5"
+        "phpunit/phpunit": "^12.5 || ^13.4"
     },
     "suggest": {
         "ext-pdo_mysql": "Database support for MySQL/MariaDB (mysqlnd builds only)",
@@ -60,7 +60,7 @@
     ],
     "extra": {
         "branch-alias": {
-            "dev-x.0-dev": "0.3.x-dev"
+            "dev-x.0-dev": "0.4.x-dev"
         }
     },
     "config": {
