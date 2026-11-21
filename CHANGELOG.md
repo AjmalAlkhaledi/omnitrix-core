@@ -27,6 +27,9 @@ All notable changes to this project are documented in this file. The format foll
   interface or name with wildcards; priorities; queued listeners (`ShouldQueue`, run by
   `queue:work`); `ShouldDispatchAfterCommit`; model events (`creating` … `deleted`, observers,
   cancelling); `Event::fake()`; `make:event`, `make:listener`.
+- **Notifications**: `Notification` classes with `mail` and `database` channels, `Notifiable` trait
+  (`notify()`, `notifications()`, `unreadNotifications()`, `markAsRead()`), anonymous recipients,
+  queued notifications (recipients reloaded by key in the worker), `Notification::fake()`.
 - **Authorization**: `Gate` facade with abilities and model policies (`before`/`after` hooks, guests
   through nullable parameters, `AuthorizationResponse` with messages and `denyAsNotFound()`),
   `$app->define()` / `$app->policy()` / `auth.policies`, `Can` middleware, `Authorizable` trait.

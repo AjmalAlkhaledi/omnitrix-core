@@ -46,6 +46,7 @@ use Omnitrix\Http\HttpKernel;
 use Omnitrix\Http\Middleware\MiddlewareInterface;
 use Omnitrix\Mail\Mailer;
 use Omnitrix\Mail\MailerFactory;
+use Omnitrix\Notifications\NotificationSender;
 use Omnitrix\Observability\HealthCheck;
 use Omnitrix\RateLimit\Limit;
 use Omnitrix\RateLimit\RateLimiter;
@@ -774,6 +775,9 @@ final class Application
             $producer = $container->has(QueueProducer::class) ? $container->get(QueueProducer::class) : null;
             $container->instance(Mailer::class, MailerFactory::make($mail, $this->runtime->logger(), $producer instanceof QueueProducer ? $producer->dispatch(...) : null));
         }
+        $mailer = $container->has(Mailer::class) ? $container->get(Mailer::class) : null;
+        $producer = $container->has(QueueProducer::class) ? $container->get(QueueProducer::class) : null;
+        $container->instance(NotificationSender::class, new NotificationSender($mailer instanceof Mailer ? $mailer : null, $producer instanceof QueueProducer ? $producer->dispatch(...) : null));
 
         $session = $config['session'] ?? null;
         if (is_array($session)) {

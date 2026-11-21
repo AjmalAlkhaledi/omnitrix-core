@@ -11,6 +11,7 @@ use Omnitrix\Core\Queue\Job;
 use Omnitrix\Events\Dispatcher;
 use Omnitrix\Facades\Facade;
 use Omnitrix\Mail\Mailer;
+use Omnitrix\Notifications\NotificationSender;
 use Omnitrix\Queue\Worker;
 use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Input\InputInterface;
@@ -76,6 +77,13 @@ final class QueueWorkCommand extends Command
                 throw new LogicException('Mail is not configured in this worker (config/mail.php)');
             }
             $mailer->handleQueued($payload);
+        });
+        $worker->handle(NotificationSender::QUEUED_NOTIFICATION_JOB, static function (array $payload): void {
+            $sender = Facade::container()?->get(NotificationSender::class);
+            if (!$sender instanceof NotificationSender) {
+                throw new LogicException('No notification sender in this worker');
+            }
+            $sender->handleQueued($payload);
         });
         foreach ($jobs as $name => $handler) {
             if (!is_string($name)) {
