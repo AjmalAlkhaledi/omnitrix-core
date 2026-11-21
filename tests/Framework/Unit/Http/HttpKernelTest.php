@@ -6,8 +6,11 @@ namespace Omnitrix\Tests\Unit\Http;
 
 use Omnitrix\Application;
 use Omnitrix\Core\Database\Cache\CacheUnavailableException;
+use Omnitrix\Core\Database\Exception\ConnectionException as DatabaseConnectionException;
+use Omnitrix\Core\Database\Exception\PoolExhaustedException;
 use Omnitrix\Core\Http\Server\IncomingRequest;
 use Omnitrix\Core\Http\Server\ResponseWriter;
+use Omnitrix\Core\Redis\Exception\ConnectionException as RedisConnectionException;
 use Omnitrix\Core\Runtime\Config\InvalidConfigurationException;
 use Omnitrix\Core\Runtime\Context\RequestContext;
 use Omnitrix\Http\ErrorResponseFactory;
@@ -154,6 +157,15 @@ final class HttpKernelTest extends TestCase
         self::assertSame('1', $response->getHeader('Retry-After'));
         self::assertStringContainsString('"message":"Service Unavailable"', $response->getBody());
         self::assertStringNotContainsString('internal detail', $response->getBody(), 'no internals without debug');
+    }
+
+    public function testUnavailableDependenciesAnswer503AndBugs500(): void
+    {
+        $factory = new ErrorResponseFactory(false);
+        foreach ([new DatabaseConnectionException('refused'), new PoolExhaustedException('full'), new RedisConnectionException('lost'), new RuntimeException('wrapped', 0, new RedisConnectionException('lost'))] as $e) {
+            self::assertSame(503, $factory->fromThrowable($e, 'rid')->getStatus(), $e::class);
+        }
+        self::assertSame(500, $factory->fromThrowable(new RuntimeException('bug'), 'rid')->getStatus());
     }
 
     public function testApplicationValidatesItsOwnSections(): void
