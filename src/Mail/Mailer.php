@@ -17,7 +17,7 @@ use function serialize;
 use function unserialize;
 
 /** Sends messages and mailables through one transport, with the configured sender. */
-final class Mailer
+final class Mailer implements \Omnitrix\Contracts\Mailer
 {
     public const string QUEUED_MAIL_JOB = 'omnitrix.mail';
 

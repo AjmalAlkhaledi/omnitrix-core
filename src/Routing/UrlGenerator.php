@@ -43,7 +43,7 @@ use const PHP_QUERY_RFC3986;
  * `app.url` is configured. Signatures are HMAC-SHA256 over the path and the sorted query, keyed
  * from `app.key` (separately from encryption), so changing any parameter invalidates them.
  */
-final class UrlGenerator
+final class UrlGenerator implements \Omnitrix\Contracts\UrlGenerator
 {
     private readonly ?string $signingKey;
 

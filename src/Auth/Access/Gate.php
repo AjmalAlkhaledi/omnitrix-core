@@ -37,7 +37,7 @@ use function is_subclass_of;
  * methods are named after the ability (`update`, `viewAny`, `force-delete` → `forceDelete`); a
  * policy's `before()` runs first. `before` hooks returning non-null decide the check.
  */
-final class Gate
+final class Gate implements \Omnitrix\Contracts\Gate
 {
     /** @var array<string, Closure> */
     private array $abilities = [];

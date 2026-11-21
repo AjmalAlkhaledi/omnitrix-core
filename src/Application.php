@@ -727,7 +727,9 @@ final class Application
         }
         $baseUrl = is_string($app['url'] ?? null) ? $app['url'] : '';
         $appKey = is_string($app['key'] ?? null) ? $app['key'] : null;
-        $container->instance(UrlGenerator::class, new UrlGenerator($this->router, $baseUrl, $appKey));
+        $urls = new UrlGenerator($this->router, $baseUrl, $appKey);
+        $container->instance(UrlGenerator::class, $urls);
+        $container->instance(Contracts\UrlGenerator::class, $urls);
 
         $redisClient = null;
         $redis = $config['redis'] ?? null;
@@ -778,6 +780,7 @@ final class Application
             $broadcastManager->channel($pattern, $callback);
         }
         $container->instance(BroadcastManager::class, $broadcastManager);
+        $container->instance(Contracts\Broadcaster::class, $broadcaster);
 
         $container->instance(EventDispatcher::class, $this->makeDispatcher($container, $config));
 
@@ -808,12 +811,15 @@ final class Application
             $gate->define($ability, $callback);
         }
         $container->instance(Gate::class, $gate);
+        $container->instance(Contracts\Gate::class, $gate);
 
         $mail = $config['mail'] ?? null;
         if (is_array($mail)) {
             /** @var array<string, mixed> $mail */
             $producer = $container->has(QueueProducer::class) ? $container->get(QueueProducer::class) : null;
-            $container->instance(Mailer::class, MailerFactory::make($mail, $this->runtime->logger(), $producer instanceof QueueProducer ? $producer->dispatch(...) : null));
+            $mailerService = MailerFactory::make($mail, $this->runtime->logger(), $producer instanceof QueueProducer ? $producer->dispatch(...) : null);
+            $container->instance(Mailer::class, $mailerService);
+            $container->instance(Contracts\Mailer::class, $mailerService);
         }
         $mailer = $container->has(Mailer::class) ? $container->get(Mailer::class) : null;
         $producer = $container->has(QueueProducer::class) ? $container->get(QueueProducer::class) : null;
