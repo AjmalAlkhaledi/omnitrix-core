@@ -15,7 +15,8 @@ final class ValidateSignature implements MiddlewareInterface
 {
     public function process(Request $request, Next $next): Response
     {
-        $url = Facade::container()?->get(UrlGenerator::class);
+        $container = Facade::container();
+        $url = $container !== null && $container->has(UrlGenerator::class) ? $container->get(UrlGenerator::class) : null;
         if (!$url instanceof UrlGenerator || !$url->hasCorrectSignature($request)) {
             return Response::json(['error' => ['status' => 403, 'message' => 'Invalid signature'], 'request_id' => $request->id()], 403);
         }

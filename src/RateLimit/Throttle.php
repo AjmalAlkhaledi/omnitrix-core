@@ -31,7 +31,8 @@ final class Throttle implements MiddlewareInterface
 
     public function process(Request $request, Next $next): Response
     {
-        $limiter = Facade::container()?->get(RateLimiter::class);
+        $container = Facade::container();
+        $limiter = $container !== null && $container->has(RateLimiter::class) ? $container->get(RateLimiter::class) : null;
         if (!$limiter instanceof RateLimiter) {
             return $next($request);
         }

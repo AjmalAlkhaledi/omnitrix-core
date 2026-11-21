@@ -198,6 +198,18 @@ final class Response
         return $this->headers;
     }
 
+    /**
+     * Replaces every cookie of the response (middleware that transforms cookies, e.g. encryption).
+     *
+     * @param list<Cookie> $cookies
+     */
+    public function replaceCookies(array $cookies): self
+    {
+        $this->cookies = $cookies;
+
+        return $this;
+    }
+
     /** @return list<Cookie> */
     public function getCookies(): array
     {

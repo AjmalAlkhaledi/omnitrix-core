@@ -9,6 +9,7 @@ use LogicException;
 use Omnitrix\Contracts\Encrypter;
 use Omnitrix\Contracts\EventDispatcher;
 use Omnitrix\Contracts\Hasher;
+use Omnitrix\Contracts\SessionHandler;
 use Omnitrix\Core\Cache\Cache as CacheService;
 use Omnitrix\Core\Container\Container;
 use Omnitrix\Core\Database\DatabaseManager;
@@ -49,6 +50,9 @@ use Omnitrix\Routing\HandlerResolver;
 use Omnitrix\Routing\Route;
 use Omnitrix\Routing\Router;
 use Omnitrix\Routing\UrlGenerator;
+use Omnitrix\Session\ArraySessionHandler;
+use Omnitrix\Session\RedisSessionHandler;
+use Omnitrix\Session\SessionConfig;
 use OpenSwoole\Coroutine;
 use OpenSwoole\Http\Server;
 use OpenSwoole\Process;
@@ -701,6 +705,21 @@ final class Application
         }
 
         $container->instance(EventDispatcher::class, $this->makeDispatcher($container, $config));
+
+        $session = $config['session'] ?? null;
+        if (is_array($session)) {
+            /** @var array<string, mixed> $session */
+            $sessionConfig = SessionConfig::fromArray($session, $redisClient !== null);
+            $container->instance(SessionConfig::class, $sessionConfig);
+            $handler = match ($sessionConfig->driver) {
+                'redis' => $redisClient !== null ? new RedisSessionHandler($redisClient, $sessionConfig->prefix) : null,
+                'array' => new ArraySessionHandler(),
+                default => null,
+            };
+            if ($handler !== null) {
+                $container->instance(SessionHandler::class, $handler);
+            }
+        }
 
         $backend = $this->rateLimitTable ?? ($redisClient !== null ? new RedisRateLimiter($redisClient) : null);
         if ($backend !== null) {

@@ -27,6 +27,10 @@ All notable changes to this project are documented in this file. The format foll
   interface or name with wildcards; priorities; queued listeners (`ShouldQueue`, run by
   `queue:work`); `ShouldDispatchAfterCommit`; model events (`creating` … `deleted`, observers,
   cancelling); `Event::fake()`; `make:event`, `make:listener`.
+- **Sessions**: `StartSession` middleware, `Session` facade (attributes, flash data, regenerate,
+  invalidate), drivers `redis`, `cookie` (encrypted) and `array`; **CSRF** protection
+  (`VerifyCsrfToken`, `XSRF-TOKEN` cookie, bearer requests exempt); **encrypted cookies**
+  (`EncryptCookies`).
 - **URLs**: `URL::to()`, `URL::route()` (named routes, pattern-checked parameters) and signed URLs
   (`signedRoute`, `temporarySignedRoute`, `ValidateSignature` middleware); `app.url`.
 - **Named rate limiters**: `$app->rateLimiter('api', fn (Request $r) => Limit::perMinute(60)->by(…))`,

@@ -35,6 +35,9 @@ final class Request
     private array $attributes = [];
 
     /** @internal requests are created by the framework's HTTP kernel */
+    /** @var array<string, string>|null cookies after middleware transformed them */
+    private ?array $cookies = null;
+
     public function __construct(private readonly IncomingRequest $incoming, private readonly RequestContext $context) {}
 
     /** @internal transport-level request; application code uses the accessors on this class */
@@ -117,12 +120,26 @@ final class Request
     /** @return array<string, string> */
     public function cookies(): array
     {
-        return $this->incoming->cookies();
+        return $this->cookies ?? $this->incoming->cookies();
     }
 
     public function cookie(string $name, ?string $default = null): ?string
     {
+        if ($this->cookies !== null) {
+            return $this->cookies[$name] ?? $default;
+        }
+
         return $this->incoming->cookie($name, $default);
+    }
+
+    /**
+     * Replaces the cookies the application sees (middleware that decrypts cookies).
+     *
+     * @param array<string, string> $cookies
+     */
+    public function replaceCookies(array $cookies): void
+    {
+        $this->cookies = $cookies;
     }
 
     public function contentType(): ?string

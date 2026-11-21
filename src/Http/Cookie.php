@@ -34,6 +34,12 @@ final readonly class Cookie
         }
     }
 
+    /** The same cookie with another value. */
+    public function withValue(string $value): self
+    {
+        return new self($this->name, $value, $this->expires, $this->path, $this->domain, $this->secure, $this->httpOnly, $this->sameSite);
+    }
+
     /** A cookie that instructs the client to delete `$name`. */
     public static function forget(string $name, string $path = '/', string $domain = ''): self
     {
