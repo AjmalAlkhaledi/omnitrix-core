@@ -4,7 +4,11 @@ All notable changes to this project are documented in this file. The format foll
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased] — planned as 0.2.0
+## [Unreleased]
+
+## [0.2.0-beta.1] - 2026-11-21
+
+Pre-release of 0.2.0 for trials in real applications; the API may still change before 0.2.0.
 
 0.x releases may change behaviour between minor versions: applications pinned to `^0.1` stay on
 0.1.x; the application template moves to `^0.2` with this release.
