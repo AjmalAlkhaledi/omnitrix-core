@@ -62,6 +62,7 @@ use Omnitrix\Routing\HandlerResolver;
 use Omnitrix\Routing\Route;
 use Omnitrix\Routing\Router;
 use Omnitrix\Routing\UrlGenerator;
+use Omnitrix\Scheduling\Schedule;
 use Omnitrix\Session\ArraySessionHandler;
 use Omnitrix\Session\RedisSessionHandler;
 use Omnitrix\Session\SessionConfig;
@@ -121,6 +122,11 @@ final class Application
     /** @var array<string, callable(Http\Request): (Limit|list<Limit>|null)> */
     private array $rateLimiters = [];
 
+    /** @var list<callable(Schedule): void> */
+    private array $scheduleDefinitions = [];
+
+    private ?Schedule $builtSchedule = null;
+
     /** @var array<string, callable> broadcast channel authorizers registered with broadcastChannel() */
     private array $broadcastChannels = [];
 
@@ -177,6 +183,28 @@ final class Application
         } elseif (!isset($config['redis'])) {
             throw InvalidConfigurationException::at('rate_limit.driver', "'redis' needs the redis configuration section");
         }
+    }
+
+    /**
+     * Defines scheduled tasks (`$app->schedule(fn (Schedule $s) => $s->job('reports.build')->daily())`);
+     * without an argument returns the schedule.
+     *
+     * @param (callable(Schedule): void)|null $define
+     */
+    public function schedule(?callable $define = null): Schedule
+    {
+        if ($define !== null) {
+            $this->scheduleDefinitions[] = $define;
+            $this->builtSchedule = null;
+        }
+        if ($this->builtSchedule === null) {
+            $this->builtSchedule = new Schedule();
+            foreach ($this->scheduleDefinitions as $definition) {
+                $definition($this->builtSchedule);
+            }
+        }
+
+        return $this->builtSchedule;
     }
 
     /**

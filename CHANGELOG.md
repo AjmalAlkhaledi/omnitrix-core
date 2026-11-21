@@ -27,6 +27,9 @@ All notable changes to this project are documented in this file. The format foll
   interface or name with wildcards; priorities; queued listeners (`ShouldQueue`, run by
   `queue:work`); `ShouldDispatchAfterCommit`; model events (`creating` … `deleted`, observers,
   cancelling); `Event::fake()`; `make:event`, `make:listener`.
+- **Task scheduling**: `$app->schedule()` with callbacks, queued jobs and console commands; cron
+  expressions and frequency helpers, time zones, `when`/`skip`, `withoutOverlapping()` and
+  `onOneServer()` (Redis locks); `schedule:run`, `schedule:work`, `schedule:list`.
 - **Contracts** (`Omnitrix\Contracts`): `Hasher`, `Encrypter`, `EventDispatcher`, `UrlGenerator`,
   `Gate`, `Mailer`, `Broadcaster`, `Guard`, `SessionHandler`, `Authenticatable`, `MustVerifyEmail`;
   services are registered under their contracts.
