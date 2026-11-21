@@ -6,7 +6,10 @@ namespace Omnitrix;
 
 use InvalidArgumentException;
 use LogicException;
+use Omnitrix\Auth\Access\AuthorizationResponse;
+use Omnitrix\Auth\Access\Gate;
 use Omnitrix\Auth\AuthManager;
+use Omnitrix\Contracts\Authenticatable;
 use Omnitrix\Contracts\Encrypter;
 use Omnitrix\Contracts\EventDispatcher;
 use Omnitrix\Contracts\Hasher;
@@ -64,6 +67,7 @@ use Psr\Log\LoggerInterface;
 use Psr\Log\LogLevel;
 use Throwable;
 
+use function class_exists;
 use function getmypid;
 use function hrtime;
 use function is_array;
@@ -109,6 +113,12 @@ final class Application
 
     /** @var array<string, callable(Http\Request): (Limit|list<Limit>|null)> */
     private array $rateLimiters = [];
+
+    /** @var array<string, callable> abilities registered with define() */
+    private array $abilities = [];
+
+    /** @var array<class-string, class-string> policies registered with policy() */
+    private array $policies = [];
 
     /** @var list<array{string|list<string>, callable|string|array{class-string, string}, int}> listeners registered with listen() */
     private array $eventListeners = [];
@@ -157,6 +167,31 @@ final class Application
         } elseif (!isset($config['redis'])) {
             throw InvalidConfigurationException::at('rate_limit.driver', "'redis' needs the redis configuration section");
         }
+    }
+
+    /**
+     * Defines an ability for every worker (`Gate::allows('reports.view')`).
+     *
+     * @param callable $callback receives the user and the arguments; returns bool or AuthorizationResponse
+     */
+    public function define(string $ability, callable $callback): self
+    {
+        $this->abilities[$ability] = $callback;
+
+        return $this;
+    }
+
+    /**
+     * Registers the policy of a model class for every worker.
+     *
+     * @param class-string $model
+     * @param class-string $policy
+     */
+    public function policy(string $model, string $policy): self
+    {
+        $this->policies[$model] = $policy;
+
+        return $this;
     }
 
     /**
@@ -717,6 +752,21 @@ final class Application
                 $container->instance(AuthManager::class, new AuthManager($auth, $hasher));
             }
         }
+
+        $authManager = $container->has(AuthManager::class) ? $container->get(AuthManager::class) : null;
+        $gate = new Gate($authManager instanceof AuthManager ? static fn(): ?Authenticatable => $authManager->guard()->user() : null);
+        $configured = is_array($auth) && is_array($auth['policies'] ?? null) ? $auth['policies'] : [];
+        foreach ($configured + $this->policies as $model => $policy) {
+            if (!is_string($model) || !is_string($policy) || !class_exists($policy)) {
+                throw InvalidConfigurationException::at('auth.policies', 'expected [Model::class => Policy::class]');
+            }
+            /** @var class-string $model */
+            $gate->policy($model, $policy);
+        }
+        foreach ($this->abilities as $ability => $callback) {
+            $gate->define($ability, $callback);
+        }
+        $container->instance(Gate::class, $gate);
 
         $mail = $config['mail'] ?? null;
         if (is_array($mail)) {

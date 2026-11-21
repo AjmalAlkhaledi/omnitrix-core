@@ -27,6 +27,9 @@ All notable changes to this project are documented in this file. The format foll
   interface or name with wildcards; priorities; queued listeners (`ShouldQueue`, run by
   `queue:work`); `ShouldDispatchAfterCommit`; model events (`creating` … `deleted`, observers,
   cancelling); `Event::fake()`; `make:event`, `make:listener`.
+- **Authorization**: `Gate` facade with abilities and model policies (`before`/`after` hooks, guests
+  through nullable parameters, `AuthorizationResponse` with messages and `denyAsNotFound()`),
+  `$app->define()` / `$app->policy()` / `auth.policies`, `Can` middleware, `Authorizable` trait.
 - **Authentication**: `Auth` facade and `Authenticate` middleware; token guard with personal access
   tokens (`HasApiTokens::createToken()`, hashed, abilities, expiry, `last_used_at`) and session guard
   (`attempt`, `login`, `logout`, remember-me, session regeneration); `Authenticatable` contract and

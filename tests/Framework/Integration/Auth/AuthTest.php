@@ -6,6 +6,7 @@ namespace Omnitrix\Tests\Integration\Auth;
 
 use DateTimeImmutable;
 use Omnitrix\Application;
+use Omnitrix\Auth\Access\Authorizable;
 use Omnitrix\Auth\Authenticatable;
 use Omnitrix\Auth\Authenticate;
 use Omnitrix\Auth\AuthManager;
@@ -52,6 +53,7 @@ use const PASSWORD_BCRYPT;
 final class AuthUser extends Model implements AuthenticatableContract
 {
     use Authenticatable;
+    use Authorizable;
     use HasApiTokens;
 
     protected static ?string $table = 'users';
@@ -135,6 +137,19 @@ final class AuthTest extends TestCase
         });
     }
 
+    public function testAbilitiesDefinedOnTheApplicationReachUserModels(): void
+    {
+        $this->withApp(function (): void {
+            $ann = AuthUser::create(['name' => 'Ann', 'email' => 'ann@example.com', 'password' => 'secret']);
+            $bob = AuthUser::create(['name' => 'Bob', 'email' => 'bob@example.com', 'password' => 'secret']);
+            self::assertTrue($ann->can('profile.edit', $ann));
+            self::assertFalse($bob->can('profile.edit', $ann));
+            self::assertTrue($bob->cannot('profile.edit', $ann));
+        }, static function (Application $app): void {
+            $app->define('profile.edit', static fn(AuthUser $user, AuthUser $profile): bool => $user->id === $profile->id);
+        });
+    }
+
     public function testOutdatedHashesAreUpgradedAtLogin(): void
     {
         $this->withApp(function (): void {
@@ -147,7 +162,8 @@ final class AuthTest extends TestCase
         });
     }
 
-    private function withApp(callable $body): void
+    /** @param (callable(Application): void)|null $configure */
+    private function withApp(callable $body, ?callable $configure = null): void
     {
         $config = ModelsAndMigrationsTest::config() + [
             'app' => ['key' => AesEncrypter::generateKey()],
@@ -160,6 +176,9 @@ final class AuthTest extends TestCase
             ],
         ];
         $app = Application::create(['server' => ['port' => 18660]] + $config);
+        if ($configure !== null) {
+            $configure($app);
+        }
         $app->withServices(static function () use ($body): void {
             (new Migrator(DB::manager(), dirname(__DIR__, 2) . '/Fixtures/migrations'))->fresh();
             $schema = new Schema(DB::connection());
