@@ -33,12 +33,37 @@ final class RedisRateLimiter implements RateLimiterInterface
 
     public function hit(string $key, int $limit, int $windowSeconds): RateLimitResult
     {
-        $window = (int) (time() / max(1, $windowSeconds));
         $redis = $this->redis ?? RedisFacade::client();
-        $reply = $redis->withConnection(fn(Redis|RedisCluster $r): mixed => $r->eval(self::SCRIPT, [$this->prefix . $key . ':' . $window, (string) $windowSeconds], 1));
+        $redisKey = $this->key($key, $windowSeconds);
+        $reply = $redis->withConnection(fn(Redis|RedisCluster $r): mixed => $r->eval(self::SCRIPT, [$redisKey, (string) $windowSeconds], 1));
         $count = is_array($reply) && is_int($reply[0] ?? null) ? $reply[0] : $limit + 1;
         $ttl = is_array($reply) && is_int($reply[1] ?? null) ? $reply[1] : $windowSeconds;
 
         return new RateLimitResult($count <= $limit, $limit, max(0, $limit - $count), max(1, $ttl));
+    }
+
+    public function attempts(string $key, int $windowSeconds): int
+    {
+        $value = ($this->redis ?? RedisFacade::client())->get($this->key($key, $windowSeconds));
+
+        return $value === null ? 0 : (int) $value;
+    }
+
+    public function availableIn(string $key, int $windowSeconds): int
+    {
+        $windowSeconds = max(1, $windowSeconds);
+        $now = time();
+
+        return max(1, ((int) ($now / $windowSeconds) + 1) * $windowSeconds - $now);
+    }
+
+    public function reset(string $key, int $windowSeconds): void
+    {
+        ($this->redis ?? RedisFacade::client())->delete($this->key($key, $windowSeconds));
+    }
+
+    private function key(string $key, int $windowSeconds): string
+    {
+        return $this->prefix . $key . ':' . (int) (time() / max(1, $windowSeconds));
     }
 }

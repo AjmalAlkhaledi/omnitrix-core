@@ -40,6 +40,11 @@ use Omnitrix\Http\ErrorResponseFactory;
 use Omnitrix\Http\HttpKernel;
 use Omnitrix\Http\Middleware\MiddlewareInterface;
 use Omnitrix\Observability\HealthCheck;
+use Omnitrix\RateLimit\Limit;
+use Omnitrix\RateLimit\RateLimiter;
+use Omnitrix\RateLimit\RedisRateLimiter;
+use Omnitrix\RateLimit\TableRateLimiter;
+use Omnitrix\RateLimit\Throttle;
 use Omnitrix\Routing\HandlerResolver;
 use Omnitrix\Routing\Route;
 use Omnitrix\Routing\Router;
@@ -92,6 +97,11 @@ final class Application
 
     private ?Container $workerContainer = null;
 
+    private ?TableRateLimiter $rateLimitTable = null;
+
+    /** @var array<string, callable(Http\Request): (Limit|list<Limit>|null)> */
+    private array $rateLimiters = [];
+
     /** @var list<array{string|list<string>, callable|string|array{class-string, string}, int}> listeners registered with listen() */
     private array $eventListeners = [];
 
@@ -122,6 +132,36 @@ final class Application
             /** @var array<string, mixed> $database */
             DatabaseManager::validate($database, isset($config['redis']));
         }
+        $rateLimit = $config['rate_limit'] ?? [];
+        if (!is_array($rateLimit)) {
+            throw InvalidConfigurationException::at('rate_limit', 'expected an array');
+        }
+        $driver = $rateLimit['driver'] ?? (isset($config['redis']) ? 'redis' : 'memory');
+        if ($driver === 'memory') {
+            $keys = $rateLimit['max_keys'] ?? 16384;
+            if (!is_int($keys) || $keys < 16) {
+                throw InvalidConfigurationException::at('rate_limit.max_keys', 'expected an integer of at least 16');
+            }
+            // Shared memory: created in the master so every worker counts in the same table.
+            $this->rateLimitTable = new TableRateLimiter($keys);
+        } elseif ($driver !== 'redis') {
+            throw InvalidConfigurationException::at('rate_limit.driver', "expected 'memory' or 'redis'");
+        } elseif (!isset($config['redis'])) {
+            throw InvalidConfigurationException::at('rate_limit.driver', "'redis' needs the redis configuration section");
+        }
+    }
+
+    /**
+     * Defines a named rate limiter for {@see Throttle::using()} (call it in `bootstrap.php`):
+     * `$app->rateLimiter('api', fn (Request $r) => Limit::perMinute(60)->by(...))`.
+     *
+     * @param callable(Http\Request): (Limit|list<Limit>|null) $callback
+     */
+    public function rateLimiter(string $name, callable $callback): self
+    {
+        $this->rateLimiters[$name] = $callback;
+
+        return $this;
     }
 
     /**
@@ -657,6 +697,15 @@ final class Application
         }
 
         $container->instance(EventDispatcher::class, $this->makeDispatcher($container, $config));
+
+        $backend = $this->rateLimitTable ?? ($redisClient !== null ? new RedisRateLimiter($redisClient) : null);
+        if ($backend !== null) {
+            $limiter = new RateLimiter($backend);
+            foreach ($this->rateLimiters as $name => $callback) {
+                $limiter->for($name, $callback);
+            }
+            $container->instance(RateLimiter::class, $limiter);
+        }
     }
 
     /** @param array<string, mixed> $config */

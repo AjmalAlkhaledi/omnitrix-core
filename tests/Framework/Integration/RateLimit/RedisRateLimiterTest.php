@@ -45,6 +45,11 @@ final class RedisRateLimiterTest extends TestCase
         self::assertSame(1, $first->remaining);
         self::assertTrue($second->allowed);
         self::assertFalse($third->allowed);
+        self::assertSame(3, $limiter->attempts($key, 60));
+        self::assertGreaterThan(0, $limiter->availableIn($key, 60));
+        $limiter->reset($key, 60);
+        self::assertSame(0, $limiter->attempts($key, 60));
+        self::assertTrue($limiter->hit($key, 2, 60)->allowed, 'a reset key starts over');
         self::assertSame(0, $third->remaining);
         self::assertGreaterThanOrEqual(1, $third->retryAfter);
     }

@@ -27,6 +27,10 @@ All notable changes to this project are documented in this file. The format foll
   interface or name with wildcards; priorities; queued listeners (`ShouldQueue`, run by
   `queue:work`); `ShouldDispatchAfterCommit`; model events (`creating` … `deleted`, observers,
   cancelling); `Event::fake()`; `make:event`, `make:listener`.
+- **Named rate limiters**: `$app->rateLimiter('api', fn (Request $r) => Limit::perMinute(60)->by(…))`,
+  `Throttle::using('api')`, several limits per limiter, custom responses; `RateLimiter` facade
+  (`attempt`, `tooManyAttempts`, `hit`, `remaining`, `availableIn`, `clear`); `rate_limit` config.
+  `RateLimiterInterface` gains `attempts()`, `availableIn()` and `reset()`.
 - **Context** facade: request-scoped values added to every log line (visible) and carried with
   queued jobs (visible and hidden) into the worker.
 - `Omnitrix\Support\Collection` (fluent, immutable) and `collect()` on model collections.

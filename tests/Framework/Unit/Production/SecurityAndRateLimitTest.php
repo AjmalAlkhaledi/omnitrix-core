@@ -114,6 +114,18 @@ final class SecurityAndRateLimitTest extends TestCase
             {
                 throw new RuntimeException('redis down');
             }
+
+            public function attempts(string $key, int $windowSeconds): int
+            {
+                return 0;
+            }
+
+            public function availableIn(string $key, int $windowSeconds): int
+            {
+                return 1;
+            }
+
+            public function reset(string $key, int $windowSeconds): void {}
         };
         $reported = [];
         $pipeline = Pipeline::compile([new RateLimit($failing, 1, 60, onError: static function (Throwable $e) use (&$reported): void {

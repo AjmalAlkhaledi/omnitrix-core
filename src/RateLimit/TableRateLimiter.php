@@ -8,6 +8,8 @@ use OpenSwoole\Table;
 
 use function crc32;
 use function dechex;
+use function is_array;
+use function is_int;
 use function max;
 use function md5;
 use function strlen;
@@ -35,8 +37,7 @@ final class TableRateLimiter implements RateLimiterInterface
         $windowSeconds = max(1, $windowSeconds);
         $now = time();
         $window = (int) ($now / $windowSeconds);
-        $id = dechex(crc32($key)) . ':' . $key;
-        $id = strlen($id) > 60 ? dechex(crc32($key)) . ':' . md5($key) : $id;
+        $id = self::id($key);
 
         $stored = $this->table->get($id, 'window');
         if ($stored !== $window) {
@@ -49,5 +50,33 @@ final class TableRateLimiter implements RateLimiterInterface
         $retryAfter = ($window + 1) * $windowSeconds - $now;
 
         return new RateLimitResult($count <= $limit, $limit, max(0, $limit - $count), max(1, $retryAfter));
+    }
+
+    public function attempts(string $key, int $windowSeconds): int
+    {
+        $window = (int) (time() / max(1, $windowSeconds));
+        $row = $this->table->get(self::id($key));
+
+        return is_array($row) && ($row['window'] ?? null) === $window && is_int($row['count'] ?? null) ? $row['count'] : 0;
+    }
+
+    public function availableIn(string $key, int $windowSeconds): int
+    {
+        $windowSeconds = max(1, $windowSeconds);
+        $now = time();
+
+        return max(1, ((int) ($now / $windowSeconds) + 1) * $windowSeconds - $now);
+    }
+
+    public function reset(string $key, int $windowSeconds): void
+    {
+        $this->table->del(self::id($key));
+    }
+
+    private static function id(string $key): string
+    {
+        $id = dechex(crc32($key)) . ':' . $key;
+
+        return strlen($id) > 60 ? dechex(crc32($key)) . ':' . md5($key) : $id;
     }
 }
