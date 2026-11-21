@@ -10,6 +10,7 @@ use Omnitrix\Contracts\EventDispatcher;
 use Omnitrix\Core\Queue\Job;
 use Omnitrix\Events\Dispatcher;
 use Omnitrix\Facades\Facade;
+use Omnitrix\Mail\Mailer;
 use Omnitrix\Queue\Worker;
 use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Input\InputInterface;
@@ -68,6 +69,13 @@ final class QueueWorkCommand extends Command
                 throw new LogicException('No event dispatcher in this worker');
             }
             $dispatcher->handleQueued($payload);
+        });
+        $worker->handle(Mailer::QUEUED_MAIL_JOB, static function (array $payload): void {
+            $mailer = Facade::container()?->get(Mailer::class);
+            if (!$mailer instanceof Mailer) {
+                throw new LogicException('Mail is not configured in this worker (config/mail.php)');
+            }
+            $mailer->handleQueued($payload);
         });
         foreach ($jobs as $name => $handler) {
             if (!is_string($name)) {

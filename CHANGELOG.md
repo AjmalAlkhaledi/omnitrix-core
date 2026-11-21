@@ -27,6 +27,9 @@ All notable changes to this project are documented in this file. The format foll
   interface or name with wildcards; priorities; queued listeners (`ShouldQueue`, run by
   `queue:work`); `ShouldDispatchAfterCommit`; model events (`creating` … `deleted`, observers,
   cancelling); `Event::fake()`; `make:event`, `make:listener`.
+- **Mail**: `Mail` facade, mailables (`send`, `queue` through `queue:work`), messages with text,
+  HTML, attachments, cc/bcc; SMTP on coroutine sockets (STARTTLS/TLS, AUTH PLAIN/LOGIN), `log` and
+  `array` transports; `Mail::fake()`.
 - **Sessions**: `StartSession` middleware, `Session` facade (attributes, flash data, regenerate,
   invalidate), drivers `redis`, `cookie` (encrypted) and `array`; **CSRF** protection
   (`VerifyCsrfToken`, `XSRF-TOKEN` cookie, bearer requests exempt); **encrypted cookies**
