@@ -48,6 +48,7 @@ use Omnitrix\RateLimit\Throttle;
 use Omnitrix\Routing\HandlerResolver;
 use Omnitrix\Routing\Route;
 use Omnitrix\Routing\Router;
+use Omnitrix\Routing\UrlGenerator;
 use OpenSwoole\Coroutine;
 use OpenSwoole\Http\Server;
 use OpenSwoole\Process;
@@ -659,6 +660,9 @@ final class Application
         if ($encrypter !== null) {
             $container->instance(Encrypter::class, $encrypter);
         }
+        $baseUrl = is_string($app['url'] ?? null) ? $app['url'] : '';
+        $appKey = is_string($app['key'] ?? null) ? $app['key'] : null;
+        $container->instance(UrlGenerator::class, new UrlGenerator($this->router, $baseUrl, $appKey));
 
         $redisClient = null;
         $redis = $config['redis'] ?? null;
