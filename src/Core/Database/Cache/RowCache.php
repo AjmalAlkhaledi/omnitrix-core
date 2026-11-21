@@ -48,8 +48,8 @@ use const JSON_UNESCAPED_UNICODE;
  * Each table also has an insert epoch (`{prefix}:{conn:table}:e`, same format) that validates
  * cached "row does not exist" entries, because inserts with generated keys cannot say in advance
  * which keys they create, and a generation (`{prefix}:{conn:table}:g`) that every entry of the
- * table depends on; it changes only when the table itself changes (created, dropped, altered,
- * truncated), never for row writes.
+ * table depends on; it changes when the table itself changes (created, dropped, altered,
+ * truncated) and is marked like a row version by writes whose triggers change the table.
  *
  * Protocol:
  *
@@ -539,8 +539,8 @@ final class RowCache
      */
     private function evaluate(?array $version, mixed $entry, ?array $epoch, ?array $generation): LookupResult
     {
-        if ($version !== null && $version[1] > 0) {
-            return LookupResult::bypass(); // a writer is changing the row
+        if (($version !== null && $version[1] > 0) || ($generation !== null && $generation[1] > 0)) {
+            return LookupResult::bypass(); // a writer is changing the row (or, through a trigger, the table)
         }
         $versionToken = $version[0] ?? null;
         $epochToken = $epoch !== null && $epoch[1] === 0 ? $epoch[0] : null;

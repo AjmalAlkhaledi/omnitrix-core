@@ -6,6 +6,28 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+### Added
+
+- Row and query cache follow **triggers**: writes to a table whose triggers write to cached tables
+  (directly, through nested triggers or foreign-key cascades) mark those tables for the write and
+  retire all their entries on commit. Triggers calling procedures retire every cached table.
+- `/metrics` reports the pool and cache statistics of every worker, not only the worker that
+  served the scrape.
+
+### Changed
+
+- Per-worker metrics (`omnitrix_worker_coroutines`, `omnitrix_event_loop_lag_*`,
+  `omnitrix_worker_memory_bytes`) carry a `worker` label.
+- Requests failing because a database, Redis or connection pool is unavailable answer `503` with
+  `Retry-After: 1` instead of `500`.
+
+### Fixed
+
+- `->cache()` on a non-key condition without `orderBy()` was ignored for tables that also have a
+  row cache.
+- Two `Database` instances with the same connection name in one coroutine shared transaction
+  state and the pinned connection.
+
 ## [0.2.0] - 2026-11-21
 
 Tried as 0.2.0-beta.1 (2026-11-21) in an application from the template before this release.

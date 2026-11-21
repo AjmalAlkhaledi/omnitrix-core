@@ -10,13 +10,21 @@ use Omnitrix\Core\Runtime\Config\InvalidConfigurationException;
 use function array_fill;
 use function array_key_exists;
 use function array_keys;
+use function array_pop;
+use function array_unique;
+use function array_values;
 use function count;
 use function implode;
 use function in_array;
 use function is_string;
 use function microtime;
+use function preg_match;
+use function preg_match_all;
+use function sort;
 use function strtolower;
 use function strtoupper;
+
+use const PREG_SET_ORDER;
 
 /**
  * What the row cache needs to know about the schema, read from `information_schema` on first use
@@ -25,7 +33,9 @@ use function strtoupper;
  * - the key columns of every cached table (unless configured explicitly);
  * - the foreign keys through which writes to one table change rows of a cached table inside the
  *   database (`ON DELETE CASCADE`, `ON DELETE SET NULL`, `ON UPDATE CASCADE`, …), so those rows are
- *   invalidated too.
+ *   invalidated too;
+ * - the triggers that write to cached tables, whose tables are invalidated as a whole by writes
+ *   to the table the trigger belongs to (the rows a trigger changes cannot be known).
  *
  * Tables that do not exist yet (before their migration ran) are looked up again on later use.
  * Schema changes made while workers run are picked up after a reload or restart.
@@ -44,6 +54,9 @@ final class CacheSchema
 
     /** @var array<string, array<string, array{kind: 'int'|'string', charset: string, collation: string}>> */
     private array $columns = [];
+
+    /** @var array<string, array<string, list<string>>> table => event (INSERT|UPDATE|DELETE) => tables its triggers write */
+    private array $triggers = [];
 
     private float $loadedAt = -1.0;
 
@@ -79,7 +92,82 @@ final class CacheSchema
         }
         $this->load();
 
-        return ($this->cascades[$table] ?? []) !== [];
+        return ($this->cascades[$table] ?? []) !== [] || $this->triggerTargets($table, ['INSERT', 'UPDATE', 'DELETE']) !== [];
+    }
+
+    /**
+     * Cached tables (row or query cache) that triggers on `$table` can change for the given
+     * events, directly or through the foreign-key cascades and triggers of the tables they write.
+     * A trigger calling a stored procedure, or writing with a join, may change any table: every
+     * configured table is returned for it.
+     *
+     * @param list<'INSERT'|'UPDATE'|'DELETE'> $events
+     *
+     * @return list<string>
+     */
+    public function triggerTargets(string $table, array $events): array
+    {
+        if (!$this->config->enabled) {
+            return [];
+        }
+        $this->load();
+        /** @var list<string> $pending */
+        $pending = [];
+        foreach ($events as $event) {
+            foreach ($this->triggers[$table][$event] ?? [] as $target) {
+                $pending[] = $target;
+            }
+        }
+        /** @var array<string, true> $seen */
+        $seen = [];
+        while ($pending !== []) {
+            $current = (string) array_pop($pending);
+            if (isset($seen[$current])) {
+                continue;
+            }
+            $seen[$current] = true;
+            foreach ($this->cascades[$current] ?? [] as $cascade) {
+                $pending[] = $cascade->childTable;
+            }
+            foreach ($this->triggers[$current] ?? [] as $targets) {
+                foreach ($targets as $target) {
+                    $pending[] = $target;
+                }
+            }
+        }
+        $configured = [];
+        foreach (array_keys($seen) as $candidate) {
+            if ($candidate !== $table && $this->isConfigured($candidate)) {
+                $configured[] = $candidate;
+            }
+        }
+        sort($configured);
+
+        return $configured;
+    }
+
+    /**
+     * Tables a trigger body writes to; every configured table when the targets cannot be known.
+     *
+     * @return list<string>
+     */
+    private function triggerWrites(string $body): array
+    {
+        if (preg_match('/\b(call|join|prepare|execute)\b/i', $body) === 1) {
+            return array_keys($this->config->tables + $this->config->queries);
+        }
+        preg_match_all(
+            '/\b(?:insert\s+(?:(?:low_priority|delayed|high_priority|ignore)\s+)*(?:into\s+)?|replace\s+(?:(?:low_priority|delayed)\s+)*(?:into\s+)?|update\s+(?:(?:low_priority|ignore)\s+)*|delete\s+(?:(?:low_priority|quick|ignore)\s+)*from\s+)`?([a-z0-9_$]+)`?(?:\s*\.\s*`?([a-z0-9_$]+)`?)?/i',
+            $body,
+            $matches,
+            PREG_SET_ORDER,
+        );
+        $tables = [];
+        foreach ($matches as $match) {
+            $tables[] = isset($match[2]) && $match[2] !== '' ? $match[2] : $match[1];
+        }
+
+        return array_values(array_unique($tables));
     }
 
     /**
@@ -229,6 +317,21 @@ final class CacheSchema
             $cascades[$row['parent']][] = new Cascade($row['child'], $childColumns, $parentColumns, $deletes, $updates);
         }
         $this->cascades = $cascades;
+
+        $triggers = [];
+        foreach (($this->select)(
+            'select event_object_table as t, event_manipulation as e, action_statement as body from information_schema.triggers where trigger_schema = database()',
+            [],
+        ) as $row) {
+            $event = is_string($row['e'] ?? null) ? strtoupper($row['e']) : '';
+            if (!is_string($row['t'] ?? null) || !is_string($row['body'] ?? null) || !in_array($event, ['INSERT', 'UPDATE', 'DELETE'], true)) {
+                continue;
+            }
+            foreach ($this->triggerWrites($row['body']) as $target) {
+                $triggers[$row['t']][$event][] = $target;
+            }
+        }
+        $this->triggers = $triggers;
 
         $columns = [];
         $queryTables = array_keys($this->config->queries);

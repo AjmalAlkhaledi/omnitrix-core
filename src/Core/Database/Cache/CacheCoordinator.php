@@ -195,6 +195,7 @@ final class CacheCoordinator
         if ($statements === []) {
             return 0; // nothing matched the WHERE clause
         }
+        $marks = array_merge($marks, $this->triggerMarks($mutation->table, self::events($mutation)));
 
         return $this->guarded($marks, fn(): int => $this->runAll($statements, $mutation->kind));
     }
@@ -246,7 +247,44 @@ final class CacheCoordinator
         if ($inserts && $this->schema->isCached($table)) {
             $marks[] = $this->cache->epochKey($table);
         }
+        $marks = array_merge($marks, $this->triggerMarks($table, ['INSERT', 'UPDATE', 'DELETE']));
+
         return $this->guarded($marks, $write);
+    }
+
+    /**
+     * Generations of the cached tables that triggers on `$table` change: marked for the write
+     * like rows, so readers bypass those tables until it ends and a commit retires all their
+     * entries.
+     *
+     * @param list<'INSERT'|'UPDATE'|'DELETE'> $events
+     *
+     * @return list<string>
+     */
+    private function triggerMarks(string $table, array $events): array
+    {
+        return array_map(fn(string $target): string => $this->cache->generationKey($target), $this->schema->triggerTargets($table, $events));
+    }
+
+    /**
+     * Trigger events a statement can fire: an upsert also updates, REPLACE also deletes.
+     *
+     * @return list<'INSERT'|'UPDATE'|'DELETE'>
+     */
+    private static function events(Mutation $mutation): array
+    {
+        if (!$mutation->isInsert()) {
+            return [$mutation->kind === Mutation::DELETE ? 'DELETE' : 'UPDATE'];
+        }
+        $events = ['INSERT'];
+        if (preg_match('/\bon\s+duplicate\s+key\s+update\b/i', $mutation->sql) === 1) {
+            $events[] = 'UPDATE';
+        }
+        if (preg_match('/^\s*replace\b/i', $mutation->sql) === 1) {
+            $events[] = 'DELETE';
+        }
+
+        return $events;
     }
 
     /**
