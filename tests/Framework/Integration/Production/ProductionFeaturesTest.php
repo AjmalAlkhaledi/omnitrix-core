@@ -19,6 +19,7 @@ use function is_string;
 use function json_decode;
 use function json_encode;
 use function preg_match;
+use function substr_count;
 
 /** Production middleware over a real server with real MariaDB and Redis. */
 #[CoversNothing]
@@ -146,8 +147,16 @@ final class ProductionFeaturesTest extends TestCase
         self::assertGreaterThanOrEqual(21, (int) ($m[1] ?? 0), 'requests handled by both workers are aggregated');
         self::assertSame(404, $this->request('GET', '/nope')['status']);
         self::assertStringContainsString('omnitrix_http_requests_total{route="unmatched",method="GET",status="404"}', $this->request('GET', '/metrics')['body']);
-        self::assertMatchesRegularExpression('/omnitrix_event_loop_lag_ms [0-9.]+/', $metrics['body']);
+        self::assertMatchesRegularExpression('/omnitrix_event_loop_lag_ms\{worker="\d"\} [0-9.]+/', $metrics['body']);
         self::assertMatchesRegularExpression('/omnitrix_db_pool_in_use\{connection="default",worker="\d"\} 0/', $metrics['body']);
+
+        // Every worker publishes its statistics each second: one scrape shows both workers.
+        \Omnitrix\Core\Runtime\Coroutine\Sleep::milliseconds(1300);
+        $body = $this->request('GET', '/metrics')['body'];
+        foreach (['0', '1'] as $worker) {
+            self::assertStringContainsString("omnitrix_db_pool_in_use{connection=\"default\",worker=\"{$worker}\"}", $body, "worker {$worker} is reported");
+        }
+        self::assertSame(1, substr_count($body, '# TYPE omnitrix_db_pool_in_use gauge'));
     }
 
     public function testLogsAreStructuredAndNeverContainCredentials(): void

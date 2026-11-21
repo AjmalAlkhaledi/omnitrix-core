@@ -24,6 +24,7 @@ use Omnitrix\Core\Queue\RedisQueue;
 use Omnitrix\Core\Redis\RedisClient;
 use Omnitrix\Core\Redis\RedisConfig;
 use Omnitrix\Core\Runtime\Config\InvalidConfigurationException;
+use Omnitrix\Core\Runtime\Coroutine\Timers;
 use Omnitrix\Core\Runtime\Exception\ExceptionHandlerInterface;
 use Omnitrix\Core\Runtime\Lifecycle\ServerRuntime;
 use Omnitrix\Core\Runtime\Shutdown\ResourceRegistry;
@@ -84,6 +85,9 @@ final class Application
     private ?MetricsRegistry $metrics = null;
 
     private ?Container $workerContainer = null;
+
+    /** Worker timer publishing this worker's metric series. */
+    private ?int $metricsTimer = null;
 
     /** @var list<MiddlewareInterface|callable(Http\Request, Http\Middleware\Next): Http\Response> */
     private array $middleware = [];
@@ -333,7 +337,7 @@ final class Application
     /**
      * Records request counts and latency histograms (shared across workers) and serves them in
      * Prometheus text format at `$path`, together with server gauges (event-loop lag,
-     * coroutines, connections, memory) and this worker's pool gauges. Protect the path with
+     * coroutines, connections, memory) and every worker's pool and cache statistics. Protect the path with
      * `$middleware` (e.g. a token check) or keep it on an internal network in production.
      *
      * @param list<MiddlewareInterface|callable(Http\Request, Http\Middleware\Next): Http\Response> $middleware
@@ -346,6 +350,8 @@ final class Application
         $this->metrics = new MetricsRegistry(); // shared memory, created in the master
         $registry = $this->metrics;
         $route = $this->router->get($path, function () use ($registry): Http\Response {
+            $registry->publish($this->workerGauges()); // this worker's numbers are current
+
             return (new Http\Response($registry->render($this->gauges())))->header('Content-Type', 'text/plain; version=0.0.4');
         })->name('omnitrix.metrics');
         if ($middleware !== []) {
@@ -388,21 +394,47 @@ final class Application
         return $this;
     }
 
-    /** @return array<string, int|float> */
+    /**
+     * Server-wide gauges (any worker reports the same values).
+     *
+     * @return array<string, int|float>
+     */
     private function gauges(): array
     {
         $gauges = [];
         $stats = $this->runtime->server()?->stats();
         if (is_array($stats)) {
-            foreach (['connections_active' => 'omnitrix_connections_active', 'connections_accepted' => 'omnitrix_connections_accepted_total', 'requests_total' => 'omnitrix_server_requests_total', 'coroutine_num' => 'omnitrix_worker_coroutines', 'event_loop_lag_ms' => 'omnitrix_event_loop_lag_ms', 'event_loop_lag_max_ms' => 'omnitrix_event_loop_lag_max_ms', 'event_loop_lag_avg_ms' => 'omnitrix_event_loop_lag_avg_ms', 'worker_memory_usage' => 'omnitrix_worker_memory_bytes', 'workers_idle' => 'omnitrix_workers_idle'] as $key => $name) {
+            foreach (['connections_active' => 'omnitrix_connections_active', 'connections_accepted' => 'omnitrix_connections_accepted_total', 'requests_total' => 'omnitrix_server_requests_total', 'workers_idle' => 'omnitrix_workers_idle'] as $key => $name) {
                 $value = $stats[$key] ?? null;
                 if (is_int($value) || is_float($value)) {
                     $gauges[$name] = $value;
                 }
             }
         }
+
+        return $gauges;
+    }
+
+    /**
+     * This worker's series, labelled with its id: published to shared memory so that every
+     * worker's numbers appear whichever worker serves `/metrics`.
+     *
+     * @return array<string, int|float>
+     */
+    private function workerGauges(): array
+    {
+        $gauges = [];
         $workerId = $this->runtime->server()?->getWorkerId();
         $worker = is_int($workerId) ? (string) $workerId : '0';
+        $stats = $this->runtime->server()?->stats();
+        if (is_array($stats)) {
+            foreach (['coroutine_num' => 'omnitrix_worker_coroutines', 'event_loop_lag_ms' => 'omnitrix_event_loop_lag_ms', 'event_loop_lag_max_ms' => 'omnitrix_event_loop_lag_max_ms', 'event_loop_lag_avg_ms' => 'omnitrix_event_loop_lag_avg_ms', 'worker_memory_usage' => 'omnitrix_worker_memory_bytes'] as $key => $name) {
+                $value = $stats[$key] ?? null;
+                if (is_int($value) || is_float($value)) {
+                    $gauges["{$name}{worker=\"{$worker}\"}"] = $value;
+                }
+            }
+        }
         $container = $this->workerContainer;
         if ($container !== null && $container->has(DatabaseManager::class)) {
             $manager = $container->get(DatabaseManager::class);
@@ -603,8 +635,19 @@ final class Application
             $worker->container->instance(HttpKernel::class, $kernel);
             $worker->container->instance(Router::class, $this->router);
             $this->registerModules($worker);
+            if ($this->metrics !== null) {
+                $metrics = $this->metrics;
+                $this->metricsTimer = Timers::tick(1000, function () use ($metrics): void {
+                    $metrics->publish($this->workerGauges());
+                });
+            }
         });
-        $this->runtime->onWorkerStop(static function (): void {
+        $this->runtime->onWorkerStop(function (): void {
+            if ($this->metricsTimer !== null) {
+                Timers::clear($this->metricsTimer);
+                $this->metricsTimer = null;
+            }
+            $this->metrics?->forget();
             Facade::setContainer(null);
         });
         $metrics = $this->metrics;

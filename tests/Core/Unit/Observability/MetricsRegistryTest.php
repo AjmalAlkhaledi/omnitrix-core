@@ -51,4 +51,21 @@ final class MetricsRegistryTest extends TestCase
             'all series of a family are adjacent',
         );
     }
+
+    public function testWorkerSeriesAreSharedReplacedAndExpire(): void
+    {
+        $m = new MetricsRegistry(8, 64);
+        $m->publish(['omnitrix_db_pool_size{worker="0"}' => 2, 'omnitrix_db_pool_idle{worker="0"}' => 1]);
+        self::assertStringContainsString("omnitrix_db_pool_size{worker=\"0\"} 2\n", $m->render(), 'rendered by any process');
+        $m->publish(['omnitrix_db_pool_size{worker="0"}' => 2, 'omnitrix_db_pool_idle{worker="0"}' => 1], 1000);
+        self::assertSame(['omnitrix_db_pool_idle{worker="0"}' => 1.0, 'omnitrix_db_pool_size{worker="0"}' => 2.0], $m->workerSeries(30, 1000));
+
+        $m->publish(['omnitrix_db_pool_size{worker="0"}' => 3], 1001);
+        self::assertSame(['omnitrix_db_pool_size{worker="0"}' => 3.0], $m->workerSeries(30, 1001), 'series no longer reported are removed');
+
+        self::assertSame([], $m->workerSeries(30, 1100), 'a worker silent for longer than maxAge is dropped');
+        $m->publish(['omnitrix_db_pool_size{worker="0"}' => 3], 1200);
+        $m->forget();
+        self::assertSame([], $m->workerSeries(30, 1200), 'a stopping worker removes its series');
+    }
 }
