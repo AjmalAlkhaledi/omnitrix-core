@@ -155,6 +155,16 @@ final class Collection implements ArrayAccess, Countable, IteratorAggregate, Jso
         return $this;
     }
 
+    /**
+     * The models as a fluent {@see \Omnitrix\Support\Collection} (map, groupBy, sortBy, …).
+     *
+     * @return \Omnitrix\Support\Collection<int, TModel>
+     */
+    public function collect(): \Omnitrix\Support\Collection
+    {
+        return new \Omnitrix\Support\Collection($this->all());
+    }
+
     /** @return list<array<string, mixed>> */
     public function toArray(): array
     {
