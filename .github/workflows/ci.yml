@@ -18,7 +18,7 @@ jobs:
     env:
       OMNITRIX_TEST_PG: '1'   # PostgreSQL tests must run (not skip) in CI
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: shivammathur/setup-php@v2
         with:
@@ -96,7 +96,7 @@ jobs:
       OMNITRIX_TEST_DB_ENGINE: mysql
       MYSQL_84: 8.4.11
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: shivammathur/setup-php@v2
         with:
