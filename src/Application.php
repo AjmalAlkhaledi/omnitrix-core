@@ -45,6 +45,7 @@ use Omnitrix\Core\Runtime\Worker\WorkerContext;
 use Omnitrix\Encryption\AesEncrypter;
 use Omnitrix\Events\Dispatcher;
 use Omnitrix\Facades\Facade;
+use Omnitrix\Filesystem\FilesystemManager;
 use Omnitrix\Hashing\HashManager;
 use Omnitrix\Http\ErrorResponseFactory;
 use Omnitrix\Http\HttpKernel;
@@ -758,6 +759,13 @@ final class Application
         $urls = new UrlGenerator($this->router, $baseUrl, $appKey);
         $container->instance(UrlGenerator::class, $urls);
         $container->instance(Contracts\UrlGenerator::class, $urls);
+        $filesystems = $config['filesystems'] ?? [];
+        if (!is_array($filesystems)) {
+            throw InvalidConfigurationException::at('filesystems', 'expected an array');
+        }
+        /** @var array<string, mixed> $filesystems */
+        $storage = new FilesystemManager($filesystems, $httpClient, $urls, $baseUrl);
+        $container->instance(FilesystemManager::class, $storage);
 
         $redisClient = null;
         $redis = $config['redis'] ?? null;

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Omnitrix\Validation;
 
 use InvalidArgumentException;
+use Omnitrix\Http\UploadedFile;
 
 use function array_key_exists;
 use function array_map;
@@ -23,6 +24,11 @@ use function is_string;
 use function mb_strlen;
 use function preg_match;
 use function str_contains;
+use function str_ends_with;
+use function str_replace;
+use function str_starts_with;
+use function strtolower;
+use function substr;
 use function trim;
 
 use const FILTER_VALIDATE_EMAIL;
@@ -33,13 +39,14 @@ use const FILTER_VALIDATE_URL;
  *
  * Rules (pipe-separated): required, nullable, sometimes, string, int, numeric, bool, array,
  * email, url, uuid, min:N, max:N (length for strings, count for arrays, value for numbers),
- * between:A,B, in:a,b,c, regex:/pattern/. Only fields named in the rules are returned:
+ * between:A,B, in:a,b,c, regex:/pattern/; for uploads file, image (not SVG), mimes:jpg,png (by
+ * the detected type) and mimetypes:image/*,application/pdf, with min/max in kilobytes. Only fields named in the rules are returned:
  * unknown input never reaches the handler ("mass assignment" protection). Rule sets are parsed
  * once per instance and can be reused across requests.
  */
 final class Validator
 {
-    private const array KNOWN = ['required', 'nullable', 'sometimes', 'string', 'int', 'integer', 'numeric', 'bool', 'boolean', 'array', 'email', 'url', 'uuid', 'min', 'max', 'between', 'in', 'regex'];
+    private const array KNOWN = ['required', 'nullable', 'sometimes', 'string', 'int', 'integer', 'numeric', 'bool', 'boolean', 'array', 'email', 'url', 'uuid', 'min', 'max', 'between', 'in', 'regex', 'file', 'image', 'mimes', 'mimetypes'];
 
     /** @var array<string, list<array{string, string}>> field => [[rule, argument]] */
     private array $rules = [];
@@ -120,6 +127,10 @@ final class Validator
             'between' => $this->between($field, $value, $argument),
             'in' => in_array(is_scalar($value) ? (string) $value : null, explode(',', $argument), true) ? null : "The selected {$field} is invalid.",
             'regex' => is_string($value) && @preg_match($argument, $value) === 1 ? null : "The {$field} format is invalid.",
+            'file' => $value instanceof UploadedFile && $value->isValid() ? null : ($value instanceof UploadedFile ? "The {$field} failed to upload: " . $value->errorMessage() : "The {$field} must be a file."),
+            'image' => $value instanceof UploadedFile && self::isImage($value) ? null : "The {$field} must be an image (jpg, png, gif, webp, avif, bmp).",
+            'mimes' => $value instanceof UploadedFile && self::hasExtension($value, $argument) ? null : "The {$field} must be a file of type: " . str_replace(',', ', ', $argument) . '.',
+            'mimetypes' => $value instanceof UploadedFile && self::hasType($value, $argument) ? null : "The {$field} must be a file of type: " . str_replace(',', ', ', $argument) . '.',
             default => "Unknown rule {$rule}.",
         };
     }
@@ -138,9 +149,43 @@ final class Validator
             is_int($value), is_float($value) => (float) $value,
             is_string($value) && is_numeric($value) => (float) $value,
             is_string($value) => (float) mb_strlen($value),
+            $value instanceof UploadedFile => $value->size() / 1024, // kilobytes
             is_array($value) => (float) count($value),
             default => 0.0,
         };
+    }
+
+    private static function isImage(UploadedFile $file): bool
+    {
+        $type = $file->mimeType();
+
+        return $file->isValid() && $type !== null && str_starts_with($type, 'image/') && $type !== 'image/svg+xml';
+    }
+
+    private static function hasExtension(UploadedFile $file, string $list): bool
+    {
+        if (!$file->isValid() || $file->mimeType() === null) {
+            return false;
+        }
+        $allowed = array_map(static fn(string $e): string => strtolower(trim($e)) === 'jpeg' ? 'jpg' : strtolower(trim($e)), explode(',', $list));
+
+        return in_array($file->extension(), $allowed, true);
+    }
+
+    private static function hasType(UploadedFile $file, string $list): bool
+    {
+        $type = $file->isValid() ? $file->mimeType() : null;
+        if ($type === null) {
+            return false;
+        }
+        foreach (explode(',', $list) as $allowed) {
+            $allowed = strtolower(trim($allowed));
+            if ($allowed === $type || (str_ends_with($allowed, '/*') && str_starts_with($type, substr($allowed, 0, -1)))) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /** @param list<string> $rules */

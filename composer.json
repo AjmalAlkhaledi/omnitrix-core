@@ -41,6 +41,7 @@
         "phpunit/phpunit": "^12.5 || ^13.4"
     },
     "suggest": {
+        "ext-fileinfo": "Detects the type of uploaded and stored files from their contents (enabled in most PHP builds)",
         "ext-pdo_mysql": "Database support for MySQL/MariaDB (mysqlnd builds only)",
         "phpunit/phpunit": "Run application tests inside a coroutine with vendor/bin/omnitrix-phpunit"
     },

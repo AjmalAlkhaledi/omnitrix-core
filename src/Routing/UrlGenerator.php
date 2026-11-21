@@ -10,9 +10,12 @@ use LogicException;
 use Omnitrix\Http\Request;
 
 use function array_key_exists;
+use function array_map;
+use function explode;
 use function hash_equals;
 use function hash_hmac;
 use function http_build_query;
+use function implode;
 use function is_int;
 use function is_numeric;
 use function is_scalar;
@@ -24,6 +27,7 @@ use function preg_match;
 use function preg_replace_callback;
 use function rawurlencode;
 use function rtrim;
+use function str_contains;
 use function str_starts_with;
 use function time;
 
@@ -156,6 +160,11 @@ final class UrlGenerator implements \Omnitrix\Contracts\UrlGenerator
                 throw new InvalidArgumentException("Parameter '{$key}' of route '{$name}' does not match {$pattern}");
             }
             $used[$key] = true;
+            if ($pattern !== '' && str_contains($value, '/')) {
+                // The route's pattern accepts slashes (`{path:.+}`): keep them, encode each segment
+                // (encoded slashes are rejected or rewritten by many proxies).
+                return implode('/', array_map(rawurlencode(...), explode('/', $value)));
+            }
 
             return rawurlencode($value);
         }, $route->pattern);

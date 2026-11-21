@@ -6,6 +6,22 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+### Added
+
+- **File uploads**: `$request->file()`, `allFiles()`, `hasFile()` with `UploadedFile` (type and
+  extension detected from the contents, `store()` / `storeAs()` with random names); validation
+  rules `file`, `image` (no SVG), `mimes`, `mimetypes`, sizes in kilobytes.
+- **File storage**: `Storage` facade and `Contracts\Filesystem` over named disks: `local`,
+  `s3` (SigV4, S3-compatible services, multipart uploads, presigned URLs) and `memory`
+  (`Storage::fake()` with assertions); `StorageRoutes` serves the public disk and signed temporary
+  links with sandboxing headers.
+
+### Changed
+
+- Signed and named route URLs keep `/` in parameters whose pattern accepts it (`{path:.+}`)
+  instead of encoding it as `%2F`, which many proxies reject.
+- PHPUnit 13 is used where available (PHP 8.4+); `x.0-dev` is aliased `0.4.x-dev`.
+
 ## [0.3.0] - 2026-11-21
 
 First stable release of 0.3 (0.3.0-beta.1 had the same changes). Upgrade notes from 0.2: see

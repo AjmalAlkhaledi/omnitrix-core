@@ -187,10 +187,40 @@ final class Request
         return $this->incoming->form();
     }
 
-    /** @return array<string, mixed> */
+    /**
+     * OpenSwoole's raw upload entries; prefer {@see file()} and {@see allFiles()}.
+     *
+     * @return array<string, mixed>
+     */
     public function files(): array
     {
         return $this->incoming->files();
+    }
+
+    /** @var array<string, UploadedFile|list<UploadedFile>>|null */
+    private ?array $uploads = null;
+
+    /**
+     * Uploaded files by field name; `photos[]` gives a list.
+     *
+     * @return array<string, UploadedFile|list<UploadedFile>>
+     */
+    public function allFiles(): array
+    {
+        return $this->uploads ??= UploadedFile::normalize($this->incoming->files());
+    }
+
+    /** The uploaded file of a field (the first one for `photos[]`), or null. */
+    public function file(string $name): ?UploadedFile
+    {
+        $file = $this->allFiles()[$name] ?? null;
+
+        return is_array($file) ? ($file[0] ?? null) : $file;
+    }
+
+    public function hasFile(string $name): bool
+    {
+        return $this->file($name)?->isValid() === true;
     }
 
     public function remoteAddress(): ?string
@@ -247,7 +277,8 @@ final class Request
     }
 
     /**
-     * Validates `all()` input against rule strings and returns only the validated fields.
+     * Validates `all()` input and the uploaded files against rule strings and returns only the
+     * validated fields (files as {@see UploadedFile}).
      *
      * @param array<string, string> $rules e.g. ['email' => 'required|email', 'age' => 'int|min:18']
      * @return array<string, mixed>
@@ -256,7 +287,7 @@ final class Request
      */
     public function validate(array $rules): array
     {
-        return (new Validator($rules))->validate($this->all());
+        return (new Validator($rules))->validate($this->allFiles() + $this->all());
     }
 
     // --- routing ----------------------------------------------------------------------------
