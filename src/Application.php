@@ -6,6 +6,8 @@ namespace Omnitrix;
 
 use InvalidArgumentException;
 use LogicException;
+use Omnitrix\Contracts\Encrypter;
+use Omnitrix\Contracts\Hasher;
 use Omnitrix\Core\Cache\Cache as CacheService;
 use Omnitrix\Core\Container\Container;
 use Omnitrix\Core\Database\DatabaseManager;
@@ -29,7 +31,9 @@ use Omnitrix\Core\Runtime\Exception\ExceptionHandlerInterface;
 use Omnitrix\Core\Runtime\Lifecycle\ServerRuntime;
 use Omnitrix\Core\Runtime\Shutdown\ResourceRegistry;
 use Omnitrix\Core\Runtime\Worker\WorkerContext;
+use Omnitrix\Encryption\AesEncrypter;
 use Omnitrix\Facades\Facade;
+use Omnitrix\Hashing\HashManager;
 use Omnitrix\Http\ErrorResponseFactory;
 use Omnitrix\Http\HttpKernel;
 use Omnitrix\Http\Middleware\MiddlewareInterface;
@@ -583,6 +587,19 @@ final class Application
         $resources->register('http_client', static function () use ($httpClient): void {
             $httpClient->close();
         }, 100);
+
+        $hashing = $config['hashing'] ?? [];
+        if (!is_array($hashing)) {
+            throw InvalidConfigurationException::at('hashing', 'expected an array');
+        }
+        /** @var array<string, mixed> $hashing */
+        $container->instance(Hasher::class, HashManager::fromConfig($hashing));
+        $app = $config['app'] ?? [];
+        /** @var array<string, mixed> $app */
+        $encrypter = is_array($app) ? AesEncrypter::fromConfig($app) : null;
+        if ($encrypter !== null) {
+            $container->instance(Encrypter::class, $encrypter);
+        }
 
         $redisClient = null;
         $redis = $config['redis'] ?? null;

@@ -62,6 +62,7 @@ final class Console
         $console = new ConsoleApplication(self::NAME, self::version());
         foreach ([
             new Commands\AboutCommand($this),
+            new Commands\KeyGenerateCommand($this),
             new Commands\ServeCommand($this),
             new Commands\RoutesCommand($this),
             new Commands\MigrateCommand($this),
