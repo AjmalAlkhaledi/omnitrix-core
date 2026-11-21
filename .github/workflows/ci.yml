@@ -84,10 +84,15 @@ jobs:
         run: bin/services down
 
   mysql:
-    name: MySQL 8 (PHP 8.5)
+    name: MySQL ${{ matrix.mysql }} (PHP 8.5)
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        mysql: ['8.0', '8.4']
     env:
       OMNITRIX_TEST_DB_ENGINE: mysql
+      MYSQL_84: 8.4.11
     steps:
       - uses: actions/checkout@v4
 
@@ -111,10 +116,23 @@ jobs:
           echo "extension=openswoole" | sudo tee "$(php -r 'echo PHP_CONFIG_FILE_SCAN_DIR;')/60-openswoole.ini"
           php --ri openswoole | grep -iE 'version|http2|openssl|curl'
 
-      - name: Install MySQL and Redis binaries
+      - name: Install MySQL ${{ matrix.mysql }} and Redis binaries
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends mysql-server redis-server
+          if [ "${{ matrix.mysql }}" = "8.0" ]; then
+            sudo apt-get install -y --no-install-recommends mysql-server redis-server
+          else
+            # Ubuntu packages only 8.0: use the official generic build (LTS). The CDN keeps only
+            # the newest release; older ones move to the archive.
+            sudo apt-get install -y --no-install-recommends redis-server libaio1t64 libnuma1
+            sudo ln -sf /usr/lib/x86_64-linux-gnu/libaio.so.1t64 /usr/lib/x86_64-linux-gnu/libaio.so.1
+            file="mysql-${MYSQL_84}-linux-glibc2.28-x86_64-minimal.tar.xz"
+            curl -sSfL "https://cdn.mysql.com/Downloads/MySQL-8.4/$file" -o "$RUNNER_TEMP/$file" \
+              || curl -sSfL "https://downloads.mysql.com/archives/get/p/23/file/$file" -o "$RUNNER_TEMP/$file"
+            mkdir -p "$RUNNER_TEMP/mysql" && tar -xJf "$RUNNER_TEMP/$file" -C "$RUNNER_TEMP/mysql" --strip-components=1
+            echo "$RUNNER_TEMP/mysql/bin" >> "$GITHUB_PATH"
+            "$RUNNER_TEMP/mysql/bin/mysqld" --version
+          fi
           sudo systemctl stop mysql redis-server || true
           sudo systemctl disable mysql || true
           # The packaged AppArmor profile only allows /var/lib/mysql; bin/services uses var/mysql.
