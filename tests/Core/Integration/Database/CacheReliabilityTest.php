@@ -226,10 +226,10 @@ final class CacheReliabilityTest extends TestCase
     public function testMultiLevelOnUpdateCascades(): void
     {
         $this->behind->exec('CREATE TABLE regions (code VARCHAR(10) PRIMARY KEY) ENGINE=InnoDB');
-        $this->behind->exec('CREATE TABLE stores (id INT PRIMARY KEY, region VARCHAR(10) NOT NULL, ref VARCHAR(20) NOT NULL UNIQUE,'
+        // shelves references stores.region, so it needs a unique key (MySQL 8.4 rejects foreign keys to non-unique columns).
+        $this->behind->exec('CREATE TABLE stores (id INT PRIMARY KEY, region VARCHAR(10) NOT NULL UNIQUE, ref VARCHAR(20) NOT NULL UNIQUE,'
             . ' CONSTRAINT stores_region FOREIGN KEY (region) REFERENCES regions (code) ON UPDATE CASCADE) ENGINE=InnoDB');
         $this->behind->exec('CREATE TABLE shelves (id INT PRIMARY KEY, region VARCHAR(10) NOT NULL, CONSTRAINT shelves_store FOREIGN KEY (region) REFERENCES stores (region) ON UPDATE CASCADE) ENGINE=InnoDB');
-        $this->behind->exec('CREATE INDEX stores_region_idx ON stores (region)');
         $this->behind->exec("INSERT INTO regions VALUES ('north'), ('south')");
         $this->behind->exec("INSERT INTO stores VALUES (1, 'north', 'n1'), (2, 'south', 's1')");
         $this->behind->exec("INSERT INTO shelves VALUES (10, 'north'), (20, 'south')");
