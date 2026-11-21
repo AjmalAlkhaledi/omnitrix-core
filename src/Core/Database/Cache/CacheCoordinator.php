@@ -20,6 +20,7 @@ use function array_keys;
 use function array_map;
 use function array_merge;
 use function array_values;
+use function bin2hex;
 use function count;
 use function implode;
 use function in_array;
@@ -277,7 +278,7 @@ final class CacheCoordinator
             return [$mutation->kind === Mutation::DELETE ? 'DELETE' : 'UPDATE'];
         }
         $events = ['INSERT'];
-        if (preg_match('/\bon\s+duplicate\s+key\s+update\b/i', $mutation->sql) === 1) {
+        if (preg_match('/\bon\s+duplicate\s+key\s+update\b|\bon\s+conflict\b.*\bdo\s+update\b/is', $mutation->sql) === 1) {
             $events[] = 'UPDATE';
         }
         if (preg_match('/^\s*replace\b/i', $mutation->sql) === 1) {
@@ -605,7 +606,7 @@ final class CacheCoordinator
     /**
      * Tag version keys for rows whose `$column` holds one of `$values`.
      *
-     * @param array{kind: 'int'|'string', charset: string, collation: string} $info
+     * @param array{kind: 'int'|'string', charset: string, collation: string, padded: bool, exact: bool} $info
      * @param list<mixed>                                                      $values
      *
      * @return list<string>
@@ -625,7 +626,7 @@ final class CacheCoordinator
      * column's collation weight (trailing spaces ignored). NULL values get no tag (no query
      * matches them with `=`). Returns null when a value cannot be tagged.
      *
-     * @param array{kind: 'int'|'string', charset: string, collation: string} $info
+     * @param array{kind: 'int'|'string', charset: string, collation: string, padded: bool, exact: bool} $info
      * @param list<mixed>                                                      $values
      *
      * @return list<string>|null
@@ -642,6 +643,26 @@ final class CacheCoordinator
                     return null;
                 }
                 $tags[(string) (int) $value] = true;
+            }
+
+            return array_map(static fn(int|string $t): string => (string) $t, array_keys($tags));
+        }
+        if ($this->grammar->dialect() === 'pgsql') {
+            // Deterministic collations compare text byte by byte: the bytes are the tag (CHAR(n)
+            // ignores trailing spaces). Non-deterministic ones (ICU, case-insensitive) cannot be
+            // tagged; the column-wide key covers them.
+            if (!$info['exact']) {
+                return null;
+            }
+            foreach ($values as $value) {
+                if ($value === null) {
+                    continue;
+                }
+                if (!is_scalar($value)) {
+                    return null;
+                }
+                $text = is_bool($value) ? ($value ? 'true' : 'false') : (string) $value;
+                $tags[bin2hex($info['padded'] ? rtrim($text, ' ') : $text)] = true;
             }
 
             return array_map(static fn(int|string $t): string => (string) $t, array_keys($tags));

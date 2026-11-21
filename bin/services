@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Local MariaDB and Redis for the integration test suite, run as unprivileged processes.
-# Usage: bin/services up|down|status|reset|restart-mysql|restart-redis
+# Usage: bin/services up|down|status|reset|restart-mysql|restart-redis|restart-postgres
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VAR="$ROOT/var"
@@ -11,6 +11,7 @@ DB_ENGINE="${OMNITRIX_TEST_DB_ENGINE:-mariadb}"   # mariadb or mysql
 MYSQL_DIR="$VAR/mysql"; REDIS_DIR="$VAR/redis"
 MYSQL_PID="$MYSQL_DIR/mariadbd.pid"; REDIS_PID="$REDIS_DIR/redis.pid"
 MYSQL_SOCK="$MYSQL_DIR/mariadbd.sock"
+PG_PORT="${OMNITRIX_TEST_PG_PORT:-55432}"; PG_DIR="$VAR/postgres"
 
 need() { command -v "$1" >/dev/null 2>&1 || { echo "missing binary: $1" >&2; exit 1; }; }
 alive() { [ -f "$1" ] && kill -0 "$(cat "$1")" 2>/dev/null; }
@@ -88,6 +89,48 @@ redis_up() {
   done
   echo "redis: failed to start, see $REDIS_DIR/redis.log" >&2; exit 1
 }
+# PostgreSQL (optional): started when its binaries are found (PG_BIN, or the newest
+# /usr/lib/postgresql/*/bin). Trust auth for user postgres on 127.0.0.1, data in var/postgres.
+pg_bin() {
+  if [ -n "${PG_BIN:-}" ]; then echo "$PG_BIN"; return; fi
+  if command -v pg_ctl >/dev/null 2>&1; then dirname "$(command -v pg_ctl)"; return; fi
+  ls -d /usr/lib/postgresql/*/bin 2>/dev/null | sort -V | tail -n 1
+}
+pg_up() {
+  local bin; bin="$(pg_bin)"
+  if [ -z "$bin" ] || [ ! -x "$bin/postgres" ]; then echo "postgres: not installed (skipped)"; return; fi
+  mkdir -p "$PG_DIR"
+  if [ -f "$PG_DIR/data/postmaster.pid" ] && kill -0 "$(head -n 1 "$PG_DIR/data/postmaster.pid")" 2>/dev/null; then echo "postgres: already running"; return; fi
+  if [ ! -f "$PG_DIR/data/PG_VERSION" ]; then
+    echo "postgres: initialising datadir"
+    if ! "$bin/initdb" -D "$PG_DIR/data" -U postgres --auth=trust -E UTF8 --no-locale >"$PG_DIR/install.log" 2>&1; then
+      # Hosts without System V shared memory (some containers) cannot run PostgreSQL at all.
+      pg_failed "initdb failed, see $PG_DIR/install.log"; return
+    fi
+  fi
+  detach "$bin/postgres" -D "$PG_DIR/data" -p "$PG_PORT" -k "$PG_DIR" -c listen_addresses=127.0.0.1 \
+    -c fsync=off -c synchronous_commit=off -c full_page_writes=off -c max_connections=300 \
+    -c shared_memory_type=mmap -c dynamic_shared_memory_type=mmap >"$PG_DIR/server.log" 2>&1 &
+  for _ in $(seq 1 60); do
+    if "$bin/pg_isready" -h 127.0.0.1 -p "$PG_PORT" -U postgres >/dev/null 2>&1; then
+      "$bin/psql" -h 127.0.0.1 -p "$PG_PORT" -U postgres -tAc "SELECT 1 FROM pg_database WHERE datname = '$DB_NAME'" | grep -q 1 \
+        || "$bin/psql" -h 127.0.0.1 -p "$PG_PORT" -U postgres -qc "CREATE DATABASE \"$DB_NAME\""
+      echo "postgres: ready on 127.0.0.1:$PG_PORT (db $DB_NAME)"; return
+    fi; sleep 0.5
+  done
+  pg_failed "failed to start, see $PG_DIR/server.log"
+}
+# Fatal only when PostgreSQL is required (OMNITRIX_TEST_PG=1, as in CI); otherwise a warning.
+pg_failed() {
+  if [ "${OMNITRIX_TEST_PG:-0}" = "1" ]; then echo "postgres: $1" >&2; exit 1; fi
+  echo "postgres: $1 (skipped; PostgreSQL tests will be skipped)" >&2
+}
+pg_down() {
+  local bin; bin="$(pg_bin)"
+  if [ -n "$bin" ] && [ -f "$PG_DIR/data/postmaster.pid" ] && kill -0 "$(head -n 1 "$PG_DIR/data/postmaster.pid")" 2>/dev/null; then
+    "$bin/pg_ctl" -D "$PG_DIR/data" -m fast -w stop >/dev/null 2>&1 || kill "$(head -n 1 "$PG_DIR/data/postmaster.pid")"; echo "postgres: stopped"
+  else echo "postgres: not running"; fi
+}
 redis_down() {
   if alive "$REDIS_PID"; then redis-cli -p "$REDIS_PORT" shutdown nosave >/dev/null 2>&1 || kill "$(cat "$REDIS_PID")"; for _ in $(seq 1 40); do alive "$REDIS_PID" || break; sleep 0.25; done; echo "redis: stopped"; else echo "redis: not running"; fi
 }
@@ -96,11 +139,12 @@ status() {
   alive "$REDIS_PID" && echo "redis: running (pid $(cat "$REDIS_PID"), port $REDIS_PORT)" || echo "redis: stopped"
 }
 case "${1:-}" in
-  up) mysql_up; redis_up ;;
-  down) redis_down; mysql_down ;;
+  up) mysql_up; redis_up; pg_up ;;
+  down) redis_down; mysql_down; pg_down ;;
   status) status ;;
-  reset) redis_down; mysql_down; rm -rf "$MYSQL_DIR/data" "$REDIS_DIR"; echo "services: data removed" ;;
+  reset) redis_down; mysql_down; pg_down; rm -rf "$MYSQL_DIR/data" "$REDIS_DIR" "$PG_DIR/data"; echo "services: data removed" ;;
   restart-mysql) mysql_down; mysql_up ;;
   restart-redis) redis_down; redis_up ;;
-  *) echo "usage: bin/services up|down|status|reset|restart-mysql|restart-redis" >&2; exit 2 ;;
+  restart-postgres) pg_down; pg_up ;;
+  *) echo "usage: bin/services up|down|status|reset|restart-mysql|restart-redis|restart-postgres" >&2; exit 2 ;;
 esac

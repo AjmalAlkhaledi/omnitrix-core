@@ -15,7 +15,7 @@ use function str_contains;
 use function strtolower;
 
 /**
- * Maps PDO/MySQL errors to the framework exception hierarchy so callers (and the pool) can
+ * Maps PDO errors (MySQL/MariaDB error numbers, PostgreSQL SQLSTATEs) to the framework exception hierarchy so callers (and the pool) can
  * react without parsing messages: connection errors discard the connection, deadlocks may be
  * retried, constraint violations map to 409/422, timeouts to 504.
  */
@@ -37,7 +37,14 @@ final class ErrorClassifier
             return new ConnectionException($message, $driverCode, $e);
         }
 
+        // PostgreSQL reports specific SQLSTATEs (MySQL uses generic ones such as 23000/HY000 with
+        // its own error numbers below), so they can be matched first for both drivers.
         return match (true) {
+            in_array($sqlState, ['40P01', '40001'], true) => new DeadlockException($described, $sql, $sqlState, $driverCode, count($bindings), $e),
+            $sqlState === '55P03' => new LockWaitTimeoutException($described, $sql, $sqlState, $driverCode, count($bindings), $e),
+            $sqlState === '57014' => new QueryTimeoutException($described, $sql, $sqlState, $driverCode, count($bindings), $e),
+            $sqlState === '23505' => new UniqueConstraintViolationException($described, $sql, $sqlState, $driverCode, count($bindings), $e),
+            in_array($sqlState, ['23502', '23503', '23514', '23P01'], true) => new ConstraintViolationException($described, $sql, $sqlState, $driverCode, count($bindings), $e),
             $driverCode === 1213 => new DeadlockException($described, $sql, $sqlState, $driverCode, count($bindings), $e),
             $driverCode === 1205 => new LockWaitTimeoutException($described, $sql, $sqlState, $driverCode, count($bindings), $e),
             in_array($driverCode, [1969, 3024, 1317], true) => new QueryTimeoutException($described, $sql, $sqlState, $driverCode, count($bindings), $e),
@@ -52,11 +59,11 @@ final class ErrorClassifier
         if (in_array($driverCode, self::CONNECTION_CODES, true)) {
             return true;
         }
-        if ($sqlState !== null && in_array($sqlState, ['08001', '08004', '08006', '08007', '08S01', 'HY093'], true)) {
-            return true;
+        if ($sqlState !== null && in_array($sqlState, ['08000', '08001', '08003', '08004', '08006', '08007', '08S01', 'HY093', '57P01', '57P02', '57P03', '53300'], true)) {
+            return true; // 57P0x: PostgreSQL shutting down / crashed backend; 53300: too many connections
         }
         $lower = strtolower($message);
-        foreach (['server has gone away', 'lost connection', 'connection refused', 'connection timed out', 'broken pipe', 'connection reset', 'packets out of order', 'no connection to the server', 'ssl connection error', 'is not allowed to connect', 'too many connections'] as $needle) {
+        foreach (['server has gone away', 'lost connection', 'connection refused', 'connection timed out', 'broken pipe', 'connection reset', 'packets out of order', 'no connection to the server', 'ssl connection error', 'is not allowed to connect', 'too many connections', 'could not connect to server', 'server closed the connection unexpectedly', 'terminating connection', 'no route to host'] as $needle) {
             if (str_contains($lower, $needle)) {
                 return true;
             }

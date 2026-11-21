@@ -52,7 +52,7 @@ final class CacheSchema
     /** @var array<string, list<Cascade>> parent table => cascades into cached tables */
     private array $cascades = [];
 
-    /** @var array<string, array<string, array{kind: 'int'|'string', charset: string, collation: string}>> */
+    /** @var array<string, array<string, array{kind: 'int'|'string', charset: string, collation: string, padded: bool, exact: bool}>> */
     private array $columns = [];
 
     /** @var array<string, array<string, list<string>>> table => event (INSERT|UPDATE|DELETE) => tables its triggers write */
@@ -64,8 +64,9 @@ final class CacheSchema
 
     /**
      * @param Closure(string, list<mixed>): list<array<string, mixed>> $select runs a query on the connection
+     * @param 'mysql'|'pgsql'|string                                     $dialect
      */
-    public function __construct(private readonly CacheConfig $config, private readonly Closure $select) {}
+    public function __construct(private readonly CacheConfig $config, private readonly Closure $select, private readonly string $dialect = 'mysql') {}
 
     /** Whether the table has a row cache or a query cache. */
     public function isConfigured(string $table): bool
@@ -153,7 +154,8 @@ final class CacheSchema
      */
     private function triggerWrites(string $body): array
     {
-        if (preg_match('/\b(call|join|prepare|execute)\b/i', $body) === 1) {
+        // CALL / PERFORM (procedures, other functions), joins and dynamic SQL may write any table.
+        if (preg_match('/\b(call|perform|join|prepare|execute)\b/i', $body) === 1) {
             return array_keys($this->config->tables + $this->config->queries);
         }
         preg_match_all(
@@ -195,7 +197,7 @@ final class CacheSchema
      * null when the table has no query cache. Integer columns compare by value; text columns by
      * their collation.
      *
-     * @return array<string, array{kind: 'int'|'string', charset: string, collation: string}>|null
+     * @return array<string, array{kind: 'int'|'string', charset: string, collation: string, padded: bool, exact: bool}>|null
      *
      * @throws InvalidConfigurationException when a configured column does not exist or has an unsupported type
      */
@@ -270,8 +272,12 @@ final class CacheSchema
         $placeholders = implode(', ', array_fill(0, count($tables), '?'));
 
         $keys = [];
+        $pg = $this->dialect === 'pgsql';
+        $schema = $pg ? 'current_schema()' : 'database()';
         foreach (($this->select)(
-            "select table_name as t, column_name as c from information_schema.key_column_usage where table_schema = database() and constraint_name = 'PRIMARY' and table_name in ({$placeholders}) order by table_name, ordinal_position",
+            $pg
+                ? "select tc.table_name as t, kcu.column_name as c from information_schema.table_constraints tc join information_schema.key_column_usage kcu on kcu.constraint_schema = tc.constraint_schema and kcu.constraint_name = tc.constraint_name and kcu.table_name = tc.table_name where tc.constraint_type = 'PRIMARY KEY' and tc.table_schema = {$schema} and tc.table_name in ({$placeholders}) order by tc.table_name, kcu.ordinal_position"
+                : "select table_name as t, column_name as c from information_schema.key_column_usage where table_schema = database() and constraint_name = 'PRIMARY' and table_name in ({$placeholders}) order by table_name, ordinal_position",
             $tables,
         ) as $row) {
             if (is_string($row['t'] ?? null) && is_string($row['c'] ?? null)) {
@@ -282,12 +288,24 @@ final class CacheSchema
 
         $constraints = [];
         foreach (($this->select)(
-            'select k.table_name as child, k.column_name as child_column, k.referenced_table_name as parent, k.referenced_column_name as parent_column,'
-            . ' k.constraint_name as name, r.delete_rule as on_delete, r.update_rule as on_update, k.ordinal_position as position'
-            . ' from information_schema.key_column_usage k join information_schema.referential_constraints r'
-            . ' on r.constraint_schema = k.constraint_schema and r.constraint_name = k.constraint_name and r.table_name = k.table_name'
-            . " where k.table_schema = database() and k.referenced_table_name is not null and k.table_name in ({$placeholders})"
-            . ' order by k.table_name, k.constraint_name, k.ordinal_position',
+            $pg
+                // Composite keys: unnest both column lists in step; rules a/r = no action/restrict, c = cascade, n/d = set null/default.
+                ? 'select cl.relname as child, att.attname as child_column, pcl.relname as parent, patt.attname as parent_column, con.conname as name,'
+                    . " case con.confdeltype when 'c' then 'CASCADE' when 'n' then 'SET NULL' when 'd' then 'SET DEFAULT' else 'NO ACTION' end as on_delete,"
+                    . " case con.confupdtype when 'c' then 'CASCADE' when 'n' then 'SET NULL' when 'd' then 'SET DEFAULT' else 'NO ACTION' end as on_update,"
+                    . ' k.ord as position'
+                    . ' from pg_constraint con join pg_class cl on cl.oid = con.conrelid join pg_namespace n on n.oid = cl.relnamespace join pg_class pcl on pcl.oid = con.confrelid'
+                    . ' cross join lateral unnest(con.conkey, con.confkey) with ordinality as k(child_att, parent_att, ord)'
+                    . ' join pg_attribute att on att.attrelid = con.conrelid and att.attnum = k.child_att'
+                    . ' join pg_attribute patt on patt.attrelid = con.confrelid and patt.attnum = k.parent_att'
+                    . " where con.contype = 'f' and n.nspname = current_schema() and cl.relname in ({$placeholders})"
+                    . ' order by cl.relname, con.conname, k.ord'
+                : 'select k.table_name as child, k.column_name as child_column, k.referenced_table_name as parent, k.referenced_column_name as parent_column,'
+                    . ' k.constraint_name as name, r.delete_rule as on_delete, r.update_rule as on_update, k.ordinal_position as position'
+                    . ' from information_schema.key_column_usage k join information_schema.referential_constraints r'
+                    . ' on r.constraint_schema = k.constraint_schema and r.constraint_name = k.constraint_name and r.table_name = k.table_name'
+                    . " where k.table_schema = database() and k.referenced_table_name is not null and k.table_name in ({$placeholders})"
+                    . ' order by k.table_name, k.constraint_name, k.ordinal_position',
             $tables,
         ) as $row) {
             $name = is_string($row['child'] ?? null) && is_string($row['name'] ?? null) ? $row['child'] . '.' . $row['name'] : null;
@@ -320,7 +338,12 @@ final class CacheSchema
 
         $triggers = [];
         foreach (($this->select)(
-            'select event_object_table as t, event_manipulation as e, action_statement as body from information_schema.triggers where trigger_schema = database()',
+            $pg
+                // The body of a PostgreSQL trigger is its function; tgtype bits: 4 insert, 8 delete, 16 update.
+                ? "select c.relname as t, e.event as e, p.prosrc as body from pg_trigger tg join pg_class c on c.oid = tg.tgrelid join pg_namespace n on n.oid = c.relnamespace join pg_proc p on p.oid = tg.tgfoid"
+                    . " cross join lateral (values ('INSERT', 4), ('DELETE', 8), ('UPDATE', 16)) as e(event, bit)"
+                    . ' where not tg.tgisinternal and n.nspname = current_schema() and (tg.tgtype::int & e.bit) <> 0'
+                : 'select event_object_table as t, event_manipulation as e, action_statement as body from information_schema.triggers where trigger_schema = database()',
             [],
         ) as $row) {
             $event = is_string($row['e'] ?? null) ? strtoupper($row['e']) : '';
@@ -337,20 +360,33 @@ final class CacheSchema
         $queryTables = array_keys($this->config->queries);
         if ($queryTables !== []) {
             $marks = implode(', ', array_fill(0, count($queryTables), '?'));
-            foreach (($this->select)(
-                'select table_name as t, column_name as c, data_type as type, character_set_name as charset, collation_name as collation'
-                . " from information_schema.columns where table_schema = database() and table_name in ({$marks})",
+            $rows = ($this->select)(
+                $pg
+                    ? 'select c.relname as t, a.attname as c, t.typname as type, t.typtype as typtype, coalesce(col.collisdeterministic, true) as exact'
+                        . ' from pg_attribute a join pg_class c on c.oid = a.attrelid join pg_namespace n on n.oid = c.relnamespace join pg_type t on t.oid = a.atttypid'
+                        . ' left join pg_collation col on col.oid = a.attcollation'
+                        . " where n.nspname = current_schema() and c.relname in ({$marks}) and a.attnum > 0 and not a.attisdropped"
+                    : 'select table_name as t, column_name as c, data_type as type, character_set_name as charset, collation_name as collation'
+                        . " from information_schema.columns where table_schema = database() and table_name in ({$marks})",
                 $queryTables,
-            ) as $row) {
+            );
+            foreach ($rows as $row) {
                 $type = is_string($row['type'] ?? null) ? strtolower($row['type']) : '';
                 if (!is_string($row['t'] ?? null) || !is_string($row['c'] ?? null)) {
                     continue;
                 }
-                if (in_array($type, ['tinyint', 'smallint', 'mediumint', 'int', 'integer', 'bigint'], true)) {
-                    $columns[$row['t']][$row['c']] = ['kind' => 'int', 'charset' => '', 'collation' => ''];
+                if ($pg) {
+                    $exact = ($row['exact'] ?? true) === true || ($row['exact'] ?? null) === 't';
+                    if (in_array($type, ['int2', 'int4', 'int8'], true)) {
+                        $columns[$row['t']][$row['c']] = ['kind' => 'int', 'charset' => '', 'collation' => '', 'padded' => false, 'exact' => true];
+                    } elseif (in_array($type, ['varchar', 'text', 'bpchar'], true) || ($row['typtype'] ?? null) === 'e') {
+                        $columns[$row['t']][$row['c']] = ['kind' => 'string', 'charset' => '', 'collation' => '', 'padded' => $type === 'bpchar', 'exact' => $exact];
+                    }
+                } elseif (in_array($type, ['tinyint', 'smallint', 'mediumint', 'int', 'integer', 'bigint'], true)) {
+                    $columns[$row['t']][$row['c']] = ['kind' => 'int', 'charset' => '', 'collation' => '', 'padded' => false, 'exact' => true];
                 } elseif (in_array($type, ['char', 'varchar', 'tinytext', 'text', 'mediumtext', 'longtext', 'enum'], true)
                     && is_string($row['charset'] ?? null) && is_string($row['collation'] ?? null)) {
-                    $columns[$row['t']][$row['c']] = ['kind' => 'string', 'charset' => $row['charset'], 'collation' => $row['collation']];
+                    $columns[$row['t']][$row['c']] = ['kind' => 'string', 'charset' => $row['charset'], 'collation' => $row['collation'], 'padded' => true, 'exact' => false];
                 }
             }
         }

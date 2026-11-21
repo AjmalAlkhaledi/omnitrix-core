@@ -553,11 +553,16 @@ final class Builder
         return $this->executor->execute($sql, $bindings);
     }
 
-    /** @param array<string, mixed> $values */
-    public function insertGetId(array $values): int
+    /**
+     * Inserts one row and returns its generated key (`$key`: the auto-increment / identity column).
+     *
+     * @param array<string, mixed> $values
+     */
+    public function insertGetId(array $values, string $key = 'id'): int
     {
         $rows = $this->normaliseRows($values);
         [$sql, $bindings] = $this->compileInsert($rows);
+        $sql = $this->grammar->compileInsertGetId($sql, $key);
         if ($this->executor instanceof CacheAwareExecutorInterface) {
             return $this->executor->mutate(new Mutation($this->table(), Mutation::INSERT_GET_ID, $sql, $bindings, insertedRows: $rows));
         }
@@ -583,9 +588,7 @@ final class Builder
             }
         }
         $head = 'update ' . $this->grammar->wrapTable($this->table()) . ' set ' . implode(', ', $sets);
-        $sql = $head . $this->compileWheres();
-        $sql .= $this->orders !== [] ? ' order by ' . implode(', ', array_map(fn(array $o): string => $this->wrapColumn($o['column']) . ' ' . $o['direction'], $this->orders)) : '';
-        $sql .= $this->limit !== null ? ' limit ' . $this->limit : '';
+        $sql = $head . $this->limitedWhere();
         $allBindings = array_merge($bindings, $this->bindings['where']);
         if ($this->executor instanceof CacheAwareExecutorInterface) {
             return $this->executor->mutate(new Mutation(
@@ -602,6 +605,28 @@ final class Builder
         }
 
         return $this->executor->execute($sql, $allBindings);
+    }
+
+    /**
+     * WHERE clause of an UPDATE/DELETE with its ORDER BY and LIMIT. Dialects without limited writes
+     * (PostgreSQL) restrict the statement to the rows the same ordered, limited SELECT finds
+     * (`ctid`, the row's physical id, inside the same statement). Bindings stay the WHERE bindings.
+     */
+    private function limitedWhere(bool $orders = true): string
+    {
+        $order = $orders && $this->orders !== [] ? ' order by ' . implode(', ', array_map(fn(array $o): string => $this->wrapColumn($o['column']) . ' ' . $o['direction'], $this->orders)) : '';
+        $limit = $this->limit !== null ? ' limit ' . $this->limit : '';
+        if ($order === '' && $limit === '') {
+            return $this->compileWheres();
+        }
+        if ($this->grammar->supportsLimitedWrites()) {
+            return $this->compileWheres() . $order . $limit;
+        }
+        if ($order === '' && $this->orders !== []) {
+            $order = ' order by ' . implode(', ', array_map(fn(array $o): string => $this->wrapColumn($o['column']) . ' ' . $o['direction'], $this->orders));
+        }
+
+        return ' where ctid in (select ctid from ' . $this->grammar->wrapTable($this->table()) . $this->compileWheres() . $order . $limit . ')';
     }
 
     /** @param array<string, mixed> $extra */
@@ -622,8 +647,7 @@ final class Builder
             throw new InvalidArgumentException('delete() without where(): use truncate or whereRaw("1 = 1") explicitly');
         }
         $head = 'delete from ' . $this->grammar->wrapTable($this->table());
-        $sql = $head . $this->compileWheres();
-        $sql .= $this->limit !== null ? ' limit ' . $this->limit : '';
+        $sql = $head . $this->limitedWhere(orders: false);
         if ($this->executor instanceof CacheAwareExecutorInterface) {
             return $this->executor->mutate(new Mutation(
                 $this->table(),
@@ -798,7 +822,7 @@ final class Builder
     {
         $previousColumns = $this->columns;
         $previousSelect = $this->bindings['select'];
-        $this->columns = [new Expression($function . '(' . ($column === '*' ? '*' : $this->grammar->wrap($column)) . ') as `aggregate`')];
+        $this->columns = [new Expression($function . '(' . ($column === '*' ? '*' : $this->grammar->wrap($column)) . ') as ' . $this->grammar->wrap('aggregate'))];
         $this->bindings['select'] = [];
         try {
             $rows = $this->get();

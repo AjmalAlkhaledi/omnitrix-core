@@ -66,6 +66,21 @@ final class MySqlGrammar implements GrammarInterface
         return false;
     }
 
+    public function dialect(): string
+    {
+        return 'mysql';
+    }
+
+    public function supportsLimitedWrites(): bool
+    {
+        return true;
+    }
+
+    public function compileInsertGetId(string $insert, string $key): string
+    {
+        return $insert; // the key is read with LAST_INSERT_ID()
+    }
+
     private function wrapSegment(string $segment): string
     {
         $segment = trim($segment);

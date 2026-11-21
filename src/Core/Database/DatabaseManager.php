@@ -7,6 +7,7 @@ namespace Omnitrix\Core\Database;
 use Omnitrix\Core\Database\Config\DatabaseConfig;
 use Omnitrix\Core\Database\Contracts\DriverInterface;
 use Omnitrix\Core\Database\Driver\MySQL\MySqlDriver;
+use Omnitrix\Core\Database\Driver\PostgreSQL\PgSqlDriver;
 use Omnitrix\Core\Database\Exception\DatabaseException;
 use Omnitrix\Core\Database\Query\Builder;
 use Omnitrix\Core\Redis\RedisClient;
@@ -46,6 +47,7 @@ final class DatabaseManager
         $this->defaultName = isset($this->configs['default']) ? 'default' : (string) array_key_first($this->configs);
         $this->drivers['mysql'] = new MySqlDriver();
         $this->drivers['mariadb'] = $this->drivers['mysql'];
+        $this->drivers['pgsql'] = new PgSqlDriver();
     }
 
     /**

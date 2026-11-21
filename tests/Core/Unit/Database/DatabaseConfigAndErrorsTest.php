@@ -45,6 +45,14 @@ final class DatabaseConfigAndErrorsTest extends TestCase
         self::assertSame(1.0, $c->pool->acquireTimeout);
         self::assertSame(0.0, $c->pool->idleTimeout);
         self::assertSame(2.0, $c->connectTimeout);
+
+        $c = DatabaseConfig::fromArray(['driver' => 'postgres', 'database' => 'app']);
+        self::assertSame('pgsql', $c->driver, 'postgres and postgresql are aliases');
+        self::assertSame(5432, $c->port);
+        self::assertSame('postgres', $c->username);
+        self::assertSame('utf8', $c->charset);
+        self::assertSame('public', $c->schema);
+        self::assertSame('reporting', DatabaseConfig::fromArray(['driver' => 'pgsql', 'database' => 'app', 'schema' => 'reporting'])->schema);
     }
 
     /** @return iterable<string, array{array<string, mixed>, string}> */
@@ -52,7 +60,7 @@ final class DatabaseConfigAndErrorsTest extends TestCase
     {
         yield 'missing database' => [[], 'database.default.database'];
         yield 'unknown key' => [['database' => 'x', 'hostname' => 'h'], 'database.default.hostname'];
-        yield 'bad driver' => [['database' => 'x', 'driver' => 'pgsql'], 'database.default.driver'];
+        yield 'bad driver' => [['database' => 'x', 'driver' => 'sqlsrv'], 'database.default.driver'];
         yield 'min > max' => [['database' => 'x', 'pool' => ['min' => 5, 'max' => 2]], 'database.default.pool.min'];
         yield 'bad pool key' => [['database' => 'x', 'pool' => ['size' => 2]], 'database.default.pool.size'];
         yield 'port range' => [['database' => 'x', 'port' => 0], 'database.default.port'];
@@ -83,6 +91,17 @@ final class DatabaseConfigAndErrorsTest extends TestCase
         yield 'fk' => ['23000', 1452, 'Cannot add or update a child row', ConstraintViolationException::class];
         yield 'not null' => ['23000', 1048, "Column 'name' cannot be null", ConstraintViolationException::class];
         yield 'syntax' => ['42000', 1064, 'You have an error in your SQL syntax', QueryException::class];
+        // PostgreSQL: pdo_pgsql reports driver code 7 for every server error; the SQLSTATE decides.
+        yield 'pg deadlock' => ['40P01', 7, 'ERROR:  deadlock detected', DeadlockException::class];
+        yield 'pg serialization' => ['40001', 7, 'ERROR:  could not serialize access due to concurrent update', DeadlockException::class];
+        yield 'pg lock timeout' => ['55P03', 7, 'ERROR:  canceling statement due to lock timeout', LockWaitTimeoutException::class];
+        yield 'pg statement timeout' => ['57014', 7, 'ERROR:  canceling statement due to statement timeout', QueryTimeoutException::class];
+        yield 'pg unique' => ['23505', 7, 'ERROR:  duplicate key value violates unique constraint "users_email_unique"', UniqueConstraintViolationException::class];
+        yield 'pg fk' => ['23503', 7, 'ERROR:  insert or update on table "posts" violates foreign key constraint', ConstraintViolationException::class];
+        yield 'pg not null' => ['23502', 7, 'ERROR:  null value in column "name" violates not-null constraint', ConstraintViolationException::class];
+        yield 'pg admin shutdown' => ['57P01', 7, 'FATAL:  terminating connection due to administrator command', ConnectionException::class];
+        yield 'pg closed' => ['HY000', 7, 'server closed the connection unexpectedly', ConnectionException::class];
+        yield 'pg syntax' => ['42601', 7, 'ERROR:  syntax error at or near "selec"', QueryException::class];
     }
 
     /** @param class-string $expected */

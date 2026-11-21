@@ -63,7 +63,7 @@ final class Database implements CacheAwareExecutorInterface
             $select = fn(string $sql, array $bindings): array => $this->select($sql, array_values($bindings));
             $this->cache = new CacheCoordinator(
                 new RowCache($redis, $config->cache, $config->name, array_keys($config->cache->tables + $config->cache->queries)),
-                new CacheSchema($config->cache, $select),
+                new CacheSchema($config->cache, $select, $driver->grammar()->dialect()),
                 $this->transactions,
                 $driver->grammar(),
                 $select,
@@ -116,6 +116,12 @@ final class Database implements CacheAwareExecutorInterface
     }
 
     /** Whether the primary-key row cache is enabled for this connection. */
+    /** Driver of the connection: `mysql` (MySQL, MariaDB) or `pgsql`. */
+    public function driverName(): string
+    {
+        return $this->driver->name();
+    }
+
     public function cacheEnabled(): bool
     {
         return $this->cache !== null;

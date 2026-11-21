@@ -29,7 +29,8 @@ use function sort;
  * `migrations` table of the default connection. A rollback reverts the most recent batch.
  *
  * MySQL and MariaDB commit DDL statements implicitly, so a migration that fails halfway leaves
- * the statements it already ran in place; keep each migration small.
+ * the statements it already ran in place; keep each migration small. On PostgreSQL each
+ * migration and its record run in one transaction.
  */
 final class Migrator
 {
@@ -61,8 +62,7 @@ final class Migrator
         }
         $batch = $this->lastBatch() + 1;
         foreach ($pending as $name) {
-            $this->apply($name, $files[$name], 'up');
-            $this->repository()->table(self::TABLE)->insert(['migration' => $name, 'batch' => $batch]);
+            $this->apply($name, $files[$name], 'up', fn(): int => $this->repository()->table(self::TABLE)->insert(['migration' => $name, 'batch' => $batch]));
         }
 
         return $pending;
@@ -198,24 +198,39 @@ final class Migrator
             if (!isset($files[$name])) {
                 throw new RuntimeException("Migration file for '{$name}' not found in {$this->path}");
             }
-            $this->apply($name, $files[$name], 'down');
-            $this->repository()->table(self::TABLE)->where('migration', $name)->delete();
+            $this->apply($name, $files[$name], 'down', fn(): int => $this->repository()->table(self::TABLE)->where('migration', $name)->delete());
             $reverted[] = $name;
         }
 
         return $reverted;
     }
 
-    /** @param 'up'|'down' $direction */
-    private function apply(string $name, string $file, string $direction): void
+    /**
+     * Runs one migration and `$record` (its row in the migrations table). PostgreSQL runs DDL in
+     * transactions: when the migration uses the repository's connection, both happen atomically,
+     * so a failing migration leaves nothing behind.
+     *
+     * @param 'up'|'down'    $direction
+     * @param callable(): int $record
+     */
+    private function apply(string $name, string $file, string $direction, callable $record): void
     {
         $migration = (static fn(string $path): mixed => require $path)($file);
         if (!$migration instanceof Migration) {
             throw new RuntimeException("Migration file {$file} must return an instance of " . Migration::class);
         }
-        $schema = new Schema($this->connection($migration->connection));
+        $db = $this->connection($migration->connection);
+        $schema = new Schema($db);
         $start = hrtime(true);
-        $direction === 'up' ? $migration->up($schema) : $migration->down($schema);
+        $run = static function () use ($migration, $schema, $direction, $record): void {
+            $direction === 'up' ? $migration->up($schema) : $migration->down($schema);
+            $record();
+        };
+        if ($db->driverName() === 'pgsql' && $db === $this->repository()) {
+            $db->transaction($run);
+        } else {
+            $run();
+        }
         if ($this->listener !== null) {
             ($this->listener)($direction, $name, (hrtime(true) - $start) / 1e6);
         }

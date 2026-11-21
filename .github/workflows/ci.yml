@@ -15,13 +15,15 @@ jobs:
       fail-fast: false
       matrix:
         php: ['8.3', '8.4', '8.5']
+    env:
+      OMNITRIX_TEST_PG: '1'   # PostgreSQL tests must run (not skip) in CI
     steps:
       - uses: actions/checkout@v4
 
       - uses: shivammathur/setup-php@v2
         with:
           php-version: ${{ matrix.php }}
-          extensions: redis, pdo_mysql, mbstring
+          extensions: redis, pdo_mysql, pdo_pgsql, mbstring
           tools: composer:v2
           coverage: none
 
@@ -38,11 +40,11 @@ jobs:
           echo "extension=openswoole" | sudo tee "$(php -r 'echo PHP_CONFIG_FILE_SCAN_DIR;')/60-openswoole.ini"
           php --ri openswoole | grep -iE 'version|http2|openssl|curl'
 
-      - name: Install MariaDB and Redis binaries
+      - name: Install MariaDB, PostgreSQL and Redis binaries
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends mariadb-server redis-server
-          sudo systemctl stop mariadb redis-server || true
+          sudo apt-get install -y --no-install-recommends mariadb-server postgresql redis-server
+          sudo systemctl stop mariadb postgresql redis-server || true
 
       - run: composer install --no-interaction --no-progress
 

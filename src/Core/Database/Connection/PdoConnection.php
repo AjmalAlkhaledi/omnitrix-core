@@ -88,6 +88,13 @@ final class PdoConnection implements ConnectionInterface
     public function insert(string $sql, array $bindings = []): int
     {
         $statement = $this->run($sql, $bindings);
+        if ($statement->columnCount() > 0) {
+            // INSERT … RETURNING (PostgreSQL): the statement itself yields the key.
+            $value = $statement->fetchColumn();
+            $statement->closeCursor();
+
+            return is_int($value) ? $value : (is_string($value) && $value !== '' ? (int) $value : 0);
+        }
         $statement->closeCursor();
         $id = $this->pdo()->lastInsertId();
 

@@ -19,4 +19,13 @@ interface GrammarInterface
     public function compileLimitOffset(?int $limit, ?int $offset): string;
 
     public function supportsReturning(): bool;
+
+    /** Dialect name: `mysql` (MySQL, MariaDB) or `pgsql`. */
+    public function dialect(): string;
+
+    /** Whether UPDATE and DELETE accept ORDER BY and LIMIT (MySQL); otherwise the builder limits by row id. */
+    public function supportsLimitedWrites(): bool;
+
+    /** Insert statement that yields the generated key (`RETURNING` where supported). */
+    public function compileInsertGetId(string $insert, string $key): string;
 }

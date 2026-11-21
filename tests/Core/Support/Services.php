@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Omnitrix\Core\Tests\Support;
 
+use PDO;
+use PDOException;
 use PHPUnit\Framework\Assert;
 
 use function getenv;
@@ -69,6 +71,48 @@ final class Services
     public static function upstreamPort(): int
     {
         return (int) self::env('OMNITRIX_TEST_UPSTREAM_PORT', '18080');
+    }
+
+    public static function pgPort(): int
+    {
+        return (int) self::env('OMNITRIX_TEST_PG_PORT', '55432');
+    }
+
+    public static function pgHost(): string
+    {
+        return self::env('OMNITRIX_TEST_PG_HOST', '127.0.0.1');
+    }
+
+    /**
+     * A `database` connection section for the local PostgreSQL.
+     *
+     * @param array<string, mixed> $extra
+     *
+     * @return array<string, mixed>
+     */
+    public static function pgConfig(string $database, array $extra = []): array
+    {
+        return $extra + ['driver' => 'pgsql', 'host' => self::pgHost(), 'port' => self::pgPort(), 'database' => $database, 'username' => self::env('OMNITRIX_TEST_PG_USER', 'postgres'), 'password' => self::env('OMNITRIX_TEST_PG_PASS', ''), 'pool' => ['min' => 0, 'max' => 8]];
+    }
+
+    /**
+     * A fresh PostgreSQL database for one test class; skips the test when PostgreSQL is not
+     * running, unless OMNITRIX_TEST_PG=1 requires it (CI), where an unreachable server fails.
+     */
+    public static function pgDatabase(string $name): PDO
+    {
+        try {
+            $root = new PDO(sprintf('pgsql:host=%s;port=%d;dbname=postgres;connect_timeout=3', self::pgHost(), self::pgPort()), self::env('OMNITRIX_TEST_PG_USER', 'postgres'), self::env('OMNITRIX_TEST_PG_PASS', ''), [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
+        } catch (PDOException $e) {
+            if (self::env('OMNITRIX_TEST_PG', '0') === '1') {
+                self::failUnreachable('PostgreSQL', $e->getMessage());
+            }
+            Assert::markTestSkipped('PostgreSQL is not running (start it with bin/services up): ' . $e->getMessage());
+        }
+        $root->exec('DROP DATABASE IF EXISTS "' . $name . '" WITH (FORCE)');
+        $root->exec('CREATE DATABASE "' . $name . '"');
+
+        return new PDO(sprintf('pgsql:host=%s;port=%d;dbname=%s', self::pgHost(), self::pgPort(), $name), self::env('OMNITRIX_TEST_PG_USER', 'postgres'), self::env('OMNITRIX_TEST_PG_PASS', ''), [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
     }
 
     public static function failUnreachable(string $service, string $detail): never

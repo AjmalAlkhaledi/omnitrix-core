@@ -18,7 +18,7 @@ use function str_replace;
 use function strtoupper;
 
 /** Compiles {@see Blueprint}s into MySQL/MariaDB DDL statements. */
-final class SchemaGrammar
+final class SchemaGrammar implements SchemaGrammarInterface
 {
     /** @return list<string> */
     public function compile(Blueprint $blueprint): array
@@ -86,6 +86,25 @@ final class SchemaGrammar
     public function wrap(string $identifier): string
     {
         return '`' . str_replace('`', '``', $identifier) . '`';
+    }
+
+    public function currentSchema(): string
+    {
+        return 'database()';
+    }
+
+    public function compileDropAll(array $tables): array
+    {
+        if ($tables === []) {
+            return [];
+        }
+        $statements = ['SET FOREIGN_KEY_CHECKS = 0'];
+        foreach ($tables as $table) {
+            $statements[] = $this->compileDrop($table, ifExists: true);
+        }
+        $statements[] = 'SET FOREIGN_KEY_CHECKS = 1';
+
+        return $statements;
     }
 
     public function column(ColumnDefinition $column, bool $inlinePrimary): string

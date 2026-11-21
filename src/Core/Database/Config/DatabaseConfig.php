@@ -19,7 +19,7 @@ use function is_string;
 /** Validated settings of one named database connection (the `database` config section). */
 final readonly class DatabaseConfig
 {
-    private const array KNOWN = ['driver', 'host', 'port', 'unix_socket', 'database', 'username', 'password', 'charset', 'collation', 'timezone', 'options', 'pool', 'connect_timeout', 'statement_timeout', 'strict', 'cache'];
+    private const array KNOWN = ['driver', 'host', 'port', 'unix_socket', 'database', 'schema', 'username', 'password', 'charset', 'collation', 'timezone', 'options', 'pool', 'connect_timeout', 'statement_timeout', 'strict', 'cache'];
 
     private const array KNOWN_POOL = ['min', 'max', 'acquire_timeout', 'idle_timeout', 'max_lifetime', 'validation_interval', 'eviction_interval'];
 
@@ -42,6 +42,8 @@ final readonly class DatabaseConfig
         public bool $strict,
         public PoolConfig $pool,
         public CacheConfig $cache,
+        /** PostgreSQL schema (`search_path`) the connection works in; unused by MySQL. */
+        public string $schema = 'public',
     ) {}
 
     /**
@@ -58,9 +60,13 @@ final readonly class DatabaseConfig
             }
         }
         $driver = self::str($config, 'driver', 'mysql', $path);
-        if (!in_array($driver, ['mysql', 'mariadb'], true)) {
-            throw InvalidConfigurationException::at("{$path}.driver", "unsupported driver '{$driver}' (mysql, mariadb)");
+        if (in_array($driver, ['postgres', 'postgresql'], true)) {
+            $driver = 'pgsql';
         }
+        if (!in_array($driver, ['mysql', 'mariadb', 'pgsql'], true)) {
+            throw InvalidConfigurationException::at("{$path}.driver", "unsupported driver '{$driver}' (mysql, mariadb, pgsql)");
+        }
+        $postgres = $driver === 'pgsql';
         $database = self::str($config, 'database', '', $path);
         if ($database === '') {
             throw InvalidConfigurationException::at("{$path}.database", 'database name is required');
@@ -109,12 +115,12 @@ final readonly class DatabaseConfig
             name: $name,
             driver: $driver,
             host: self::str($config, 'host', '127.0.0.1', $path),
-            port: self::int($config, 'port', 3306, 1, 65535, $path),
+            port: self::int($config, 'port', $postgres ? 5432 : 3306, 1, 65535, $path),
             unixSocket: $unixSocket,
             database: $database,
-            username: self::str($config, 'username', 'root', $path),
+            username: self::str($config, 'username', $postgres ? 'postgres' : 'root', $path),
             password: self::str($config, 'password', '', $path),
-            charset: self::str($config, 'charset', 'utf8mb4', $path),
+            charset: self::str($config, 'charset', $postgres ? 'utf8' : 'utf8mb4', $path),
             collation: is_string($collation) ? $collation : null,
             timezone: is_string($timezone) ? $timezone : null,
             options: $typedOptions,
@@ -123,6 +129,7 @@ final readonly class DatabaseConfig
             strict: self::bool($config, 'strict', true, $path),
             pool: $pool,
             cache: CacheConfig::fromArray($config['cache'] ?? null, $name),
+            schema: self::str($config, 'schema', 'public', $path),
         );
     }
 

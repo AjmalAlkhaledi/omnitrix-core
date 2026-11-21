@@ -14,16 +14,16 @@ use function sort;
 use const SORT_STRING;
 
 /**
- * Creates, changes and drops tables on one connection (MySQL/MariaDB). Migrations receive an
+ * Creates, changes and drops tables on one connection (MySQL/MariaDB or PostgreSQL). Migrations receive an
  * instance; elsewhere use `new Schema(DB::connection())`.
  */
 final class Schema
 {
-    private readonly SchemaGrammar $grammar;
+    private readonly SchemaGrammarInterface $grammar;
 
     public function __construct(private readonly Database $db)
     {
-        $this->grammar = new SchemaGrammar();
+        $this->grammar = $db->driverName() === 'pgsql' ? new PostgresSchemaGrammar() : new SchemaGrammar();
     }
 
     /** @param callable(Blueprint): void $define */
@@ -62,18 +62,18 @@ final class Schema
 
     public function hasTable(string $table): bool
     {
-        return $this->db->selectOne('select 1 as found from information_schema.tables where table_schema = database() and table_name = ?', [$table]) !== null;
+        return $this->db->selectOne('select 1 as found from information_schema.tables where table_schema = ' . $this->grammar->currentSchema() . ' and table_name = ?', [$table]) !== null;
     }
 
     public function hasColumn(string $table, string $column): bool
     {
-        return $this->db->selectOne('select 1 as found from information_schema.columns where table_schema = database() and table_name = ? and column_name = ?', [$table, $column]) !== null;
+        return $this->db->selectOne('select 1 as found from information_schema.columns where table_schema = ' . $this->grammar->currentSchema() . ' and table_name = ? and column_name = ?', [$table, $column]) !== null;
     }
 
     /** @return list<string> base tables of the current database, sorted by byte value */
     public function tables(): array
     {
-        $rows = $this->db->select("select table_name as name from information_schema.tables where table_schema = database() and table_type = 'BASE TABLE'");
+        $rows = $this->db->select('select table_name as name from information_schema.tables where table_schema = ' . $this->grammar->currentSchema() . " and table_type = 'BASE TABLE'");
 
         $tables = array_values(array_map(static fn(array $row): string => is_string($row['name'] ?? null) ? $row['name'] : '', $rows));
         sort($tables, SORT_STRING);
@@ -91,15 +91,11 @@ final class Schema
         if ($tables === []) {
             return;
         }
+        // One connection: MySQL's FOREIGN_KEY_CHECKS is a session setting.
         $connection = $this->db->acquire();
         try {
-            $connection->execute('SET FOREIGN_KEY_CHECKS = 0');
-            try {
-                foreach ($tables as $table) {
-                    $connection->execute($this->grammar->compileDrop($table, ifExists: true));
-                }
-            } finally {
-                $connection->execute('SET FOREIGN_KEY_CHECKS = 1');
+            foreach ($this->grammar->compileDropAll($tables) as $sql) {
+                $connection->execute($sql);
             }
         } finally {
             $connection->release();
