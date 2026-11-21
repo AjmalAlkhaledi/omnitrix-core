@@ -44,6 +44,7 @@ use function parse_url;
 use function preg_match;
 use function str_replace;
 use function strlen;
+use function substr;
 
 /**
  * @property int         $id
@@ -117,7 +118,7 @@ final class VerificationAndPasswordResetTest extends TestCase
             $token = $m[1] ?? "";
             self::assertNotSame($token, DB::connection()->table('password_reset_tokens')->where('email', 'ann@example.com')->value('token'), 'only a hash is stored');
 
-            self::assertSame(422, $this->send($kernel, 'POST', '/reset-password', [], ['email' => 'ann@example.com', 'token' => str_replace('a', 'b', $token), 'password' => 'new-password'])->getStatus());
+            self::assertSame(422, $this->send($kernel, 'POST', '/reset-password', [], ['email' => 'ann@example.com', 'token' => substr($token, 0, -1) . ($token[63] === '0' ? '1' : '0'), 'password' => 'new-password'])->getStatus());
             self::assertSame('{"reset":true}', $this->send($kernel, 'POST', '/reset-password', [], ['email' => 'ann@example.com', 'token' => $token, 'password' => 'new-password'])->getBody());
             self::assertTrue(Auth::guard('api')->validate(['email' => 'ann@example.com', 'password' => 'new-password']));
             self::assertFalse(Auth::guard('api')->validate(['email' => 'ann@example.com', 'password' => 'old-password']));
