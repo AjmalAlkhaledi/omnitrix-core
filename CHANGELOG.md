@@ -6,10 +6,10 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
-## [0.3.0-beta.1] - 2026-11-21
+## [0.3.0] - 2026-11-21
 
-Pre-release of 0.3.0 for trials in real applications; the API may still change before 0.3.0.
-Upgrade notes: see Reference → Versioning and upgrades in the documentation.
+First stable release of 0.3 (0.3.0-beta.1 had the same changes). Upgrade notes from 0.2: see
+Reference → Versioning and upgrades in the documentation.
 
 ### Added
 
