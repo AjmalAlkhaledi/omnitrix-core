@@ -60,11 +60,13 @@ final class Dispatcher implements EventDispatcher
     /**
      * @param (Closure(string, array<string, mixed>, float, ?string): mixed)|null $queue    dispatches a job (name, payload, delay, queue)
      * @param (Closure(callable): bool)|null                                    $deferred runs a callback after the current commit; false when no transaction is open
+     * @param (Closure(\Omnitrix\Broadcasting\ShouldBroadcast): void)|null       $broadcast publishes broadcastable events
      */
     public function __construct(
         private readonly ?ContainerInterface $container = null,
         private readonly ?Closure $queue = null,
         private readonly ?Closure $deferred = null,
+        private readonly ?Closure $broadcast = null,
     ) {}
 
     public function listen(string|array $events, callable|string|array $listener, int $priority = 0): void
@@ -149,6 +151,9 @@ final class Dispatcher implements EventDispatcher
         }
         if ($event instanceof AfterCommitted) {
             $event = $event->event;
+        }
+        if ($event instanceof \Omnitrix\Broadcasting\ShouldBroadcast && $this->broadcast !== null) {
+            ($this->broadcast)($event);
         }
         $name = is_object($event) ? get_class($event) : $event;
         $arguments = is_object($event) ? [$event] : $payload;

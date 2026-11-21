@@ -27,6 +27,9 @@ All notable changes to this project are documented in this file. The format foll
   interface or name with wildcards; priorities; queued listeners (`ShouldQueue`, run by
   `queue:work`); `ShouldDispatchAfterCommit`; model events (`creating` … `deleted`, observers,
   cancelling); `Event::fake()`; `make:event`, `make:listener`.
+- **Broadcasting**: `ShouldBroadcast` events, `Broadcast` facade, `redis`/`log`/`null` broadcasters,
+  public, private and presence channels authorized with `$app->broadcastChannel()`, and a
+  Server-Sent Events endpoint (`BroadcastRoutes::register()`) delivering across workers and servers.
 - **Factories**: `Factory` (definition, `count`, `state`, `sequence`, `for`, `has`, `afterMaking`,
   `afterCreating`, `make`, `create`, `raw`), `HasFactory`, a built-in fake-data generator
   (`unique()`, seeding); `make:factory`.

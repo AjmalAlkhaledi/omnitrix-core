@@ -10,6 +10,10 @@ use Omnitrix\Auth\Access\AuthorizationResponse;
 use Omnitrix\Auth\Access\Gate;
 use Omnitrix\Auth\AuthManager;
 use Omnitrix\Auth\Passwords\PasswordBroker;
+use Omnitrix\Broadcasting\ArrayBroadcaster;
+use Omnitrix\Broadcasting\BroadcastManager;
+use Omnitrix\Broadcasting\LogBroadcaster;
+use Omnitrix\Broadcasting\RedisBroadcaster;
 use Omnitrix\Contracts\Authenticatable;
 use Omnitrix\Contracts\Encrypter;
 use Omnitrix\Contracts\EventDispatcher;
@@ -117,6 +121,9 @@ final class Application
     /** @var array<string, callable(Http\Request): (Limit|list<Limit>|null)> */
     private array $rateLimiters = [];
 
+    /** @var array<string, callable> broadcast channel authorizers registered with broadcastChannel() */
+    private array $broadcastChannels = [];
+
     /** @var array<string, callable> abilities registered with define() */
     private array $abilities = [];
 
@@ -170,6 +177,19 @@ final class Application
         } elseif (!isset($config['redis'])) {
             throw InvalidConfigurationException::at('rate_limit.driver', "'redis' needs the redis configuration section");
         }
+    }
+
+    /**
+     * Authorizes listeners of private and presence channels (`user.{id}` matches
+     * `private-user.5`): return true (or, for presence channels, the member's public info).
+     *
+     * @param callable $callback receives the user and the pattern's parameters
+     */
+    public function broadcastChannel(string $pattern, callable $callback): self
+    {
+        $this->broadcastChannels[$pattern] = $callback;
+
+        return $this;
     }
 
     /**
@@ -745,6 +765,20 @@ final class Application
             }
         }
 
+        $broadcasting = $config['broadcasting'] ?? [];
+        $driver = is_array($broadcasting) ? ($broadcasting['default'] ?? ($redisClient !== null ? 'redis' : 'null')) : 'null';
+        $broadcaster = match ($driver) {
+            'redis' => $redisClient !== null ? new RedisBroadcaster($redisClient) : throw InvalidConfigurationException::at('broadcasting.default', "'redis' needs the redis configuration section"),
+            'log' => new LogBroadcaster($this->runtime->logger()),
+            'null' => new ArrayBroadcaster(),
+            default => throw InvalidConfigurationException::at('broadcasting.default', "expected 'redis', 'log' or 'null'"),
+        };
+        $broadcastManager = new BroadcastManager($broadcaster);
+        foreach ($this->broadcastChannels as $pattern => $callback) {
+            $broadcastManager->channel($pattern, $callback);
+        }
+        $container->instance(BroadcastManager::class, $broadcastManager);
+
         $container->instance(EventDispatcher::class, $this->makeDispatcher($container, $config));
 
         $auth = $config['auth'] ?? null;
@@ -857,7 +891,8 @@ final class Application
                 return true;
             }
         : null;
-        $dispatcher = new Dispatcher($container, $queue, $deferred);
+        $broadcasts = $container->has(BroadcastManager::class) ? $container->get(BroadcastManager::class) : null;
+        $dispatcher = new Dispatcher($container, $queue, $deferred, $broadcasts instanceof BroadcastManager ? $broadcasts->broadcastEvent(...) : null);
         $events = $config['events'] ?? [];
         $listen = is_array($events) ? ($events['listen'] ?? []) : [];
         if (!is_array($listen)) {
