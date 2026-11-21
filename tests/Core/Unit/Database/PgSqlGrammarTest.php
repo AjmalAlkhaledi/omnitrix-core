@@ -32,8 +32,8 @@ final class PgSqlGrammarTest extends TestCase
 
     public function testAggregatesInsertGetIdAndLimitedWrites(): void
     {
-        $this->builder()->where('status', 'active')->count();
-        self::assertSame('select count(*) as "aggregate" from "users" where "status" = ?', $this->last()[0]);
+        $this->builder()->where('status', 'active')->orderBy('id')->count();
+        self::assertSame('select count(*) as "aggregate" from "users" where "status" = ?', $this->last()[0], 'an ungrouped aggregate has no ORDER BY');
 
         self::assertSame(99, $this->builder()->insertGetId(['name' => 'Ann']));
         self::assertSame(['insert into "users" ("name") values (?) returning "id"', ['Ann']], $this->last());

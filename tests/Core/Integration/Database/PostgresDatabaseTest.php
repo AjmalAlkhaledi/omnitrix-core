@@ -25,6 +25,7 @@ use Throwable;
 
 use function array_column;
 use function hrtime;
+use function json_encode;
 use function sort;
 use function uniqid;
 
@@ -165,7 +166,7 @@ final class PostgresDatabaseTest extends TestCase
         }
         $results = [$done->pop(10.0), $done->pop(10.0)];
         sort($results);
-        self::assertSame(['deadlock', 'ok'], $results, 'PostgreSQL detects the deadlock (40P01) and one transaction wins');
+        self::assertSame(['deadlock', 'ok'], $results, 'PostgreSQL detects the deadlock (40P01) and one transaction wins; got ' . json_encode($results));
 
         $t = hrtime(true);
         $wait = new Channel(4);

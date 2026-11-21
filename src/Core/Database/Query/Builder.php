@@ -822,13 +822,19 @@ final class Builder
     {
         $previousColumns = $this->columns;
         $previousSelect = $this->bindings['select'];
+        $previousOrders = $this->orders;
         $this->columns = [new Expression($function . '(' . ($column === '*' ? '*' : $this->grammar->wrap($column)) . ') as ' . $this->grammar->wrap('aggregate'))];
         $this->bindings['select'] = [];
+        if ($this->groups === []) {
+            // One row: ordering means nothing, and PostgreSQL rejects ORDER BY on non-grouped columns.
+            $this->orders = [];
+        }
         try {
             $rows = $this->get();
         } finally {
             $this->columns = $previousColumns;
             $this->bindings['select'] = $previousSelect;
+            $this->orders = $previousOrders;
         }
 
         return $rows[0]['aggregate'] ?? null;
