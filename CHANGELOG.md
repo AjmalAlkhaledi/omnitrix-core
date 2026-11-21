@@ -15,11 +15,16 @@ All notable changes to this project are documented in this file. The format foll
   `s3` (SigV4, S3-compatible services, multipart uploads, presigned URLs) and `memory`
   (`Storage::fake()` with assertions); `StorageRoutes` serves the public disk and signed temporary
   links with sandboxing headers.
+- **Maintenance mode**: `php omnitrix down` (message, `Retry-After`, bypass secret, allowed IPs)
+  and `up`; 503 for every path before routing, health checks and metrics exempt; file or Redis
+  state (all servers at once); `queue:work` pauses while down unless `--force`.
+- `HttpKernel::beforeRouting()` for checks that answer before a route is matched.
 
 ### Changed
 
 - Signed and named route URLs keep `/` in parameters whose pattern accepts it (`{path:.+}`)
   instead of encoding it as `%2F`, which many proxies reject.
+- Presence channels never send a member their own `presence.joined` (it depended on timing).
 - PHPUnit 13 is used where available (PHP 8.4+); `x.0-dev` is aliased `0.4.x-dev`.
 
 ## [0.3.0] - 2026-11-21

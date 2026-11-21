@@ -11,6 +11,7 @@ use Omnitrix\Core\Queue\Job;
 use Omnitrix\Events\Dispatcher;
 use Omnitrix\Facades\Facade;
 use Omnitrix\Mail\Mailer;
+use Omnitrix\Maintenance\MaintenanceMode;
 use Omnitrix\Notifications\NotificationSender;
 use Omnitrix\Queue\Worker;
 use Symfony\Component\Console\Attribute\AsCommand;
@@ -49,7 +50,8 @@ final class QueueWorkCommand extends Command
     {
         $this->addOption('queue', null, InputOption::VALUE_REQUIRED, 'Queue name (default: queue.queue or "default")')
             ->addOption('concurrency', 'c', InputOption::VALUE_REQUIRED, 'Jobs processed at the same time')
-            ->addOption('timeout', 't', InputOption::VALUE_REQUIRED, 'Seconds before a running job counts as failed');
+            ->addOption('timeout', 't', InputOption::VALUE_REQUIRED, 'Seconds before a running job counts as failed')
+            ->addOption('force', null, InputOption::VALUE_NONE, 'Keep processing jobs while the application is down for maintenance');
     }
 
     protected function execute(InputInterface $input, OutputInterface $output): int
@@ -92,7 +94,16 @@ final class QueueWorkCommand extends Command
             $worker->handle($name, self::resolve($name, $handler));
         }
         $output->writeln("<info>Processing queue '{$queue}'</info> with " . count($jobs) . " application job type(s), concurrency {$concurrency}. Stop with Ctrl+C.");
-        $code = $app->withServices(static fn(): int => $worker->run());
+        $force = $input->getOption('force') === true;
+        $code = $app->withServices(static function () use ($worker, $force): int {
+            $container = Facade::container();
+            $mode = $container !== null && $container->has(MaintenanceMode::class) ? $container->get(MaintenanceMode::class) : null;
+            if (!$force && $mode instanceof MaintenanceMode) {
+                $worker->pauseWhen(static fn(): bool => $mode->active());
+            }
+
+            return $worker->run();
+        });
         $stats = $worker->stats();
         $output->writeln('Stopped. processed=' . ($stats['processed'] ?? 0) . ' failed=' . ($stats['failed'] ?? 0) . ' retried=' . ($stats['retried'] ?? 0));
 

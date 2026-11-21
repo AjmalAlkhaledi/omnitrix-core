@@ -81,9 +81,31 @@ final class HttpKernel
     }
 
     /** Produces a Response for a Request (also usable without a server, e.g. in tests). */
+    /** @var list<Closure(Request): ?Response> */
+    private array $beforeRouting = [];
+
+    /**
+     * Runs before routing; a returned Response is sent as is (maintenance mode answers every
+     * path, known or not).
+     *
+     * @param callable(Request): ?Response $check
+     */
+    public function beforeRouting(callable $check): self
+    {
+        $this->beforeRouting[] = $check(...);
+
+        return $this;
+    }
+
     public function handle(Request $request): Response
     {
         try {
+            foreach ($this->beforeRouting as $check) {
+                $early = $check($request);
+                if ($early !== null) {
+                    return $early;
+                }
+            }
             $match = $this->router->dispatch($request->method(), $request->path());
             $request->setRoute($match->params, $match->route->getName(), $match->route->pattern);
             $pipeline = $this->router->pipelineFor($match->route, $this->compileRoute(...));

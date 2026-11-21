@@ -95,7 +95,9 @@ final class BroadcastingTest extends TestCase
             $members = $this->readUntil($bob, 'presence.members');
             self::assertStringContainsString('{"id":1,"name":"Ann"}', $members);
             self::assertStringContainsString('{"id":2,"name":"Bob"}', $members);
-            self::assertStringContainsString("event: presence.joined\ndata: {\"channel\":\"presence-room.lobby\",\"data\":{\"id\":2,\"name\":\"Bob\"}}", $this->readUntil($ann, 'presence.joined'));
+            $joined = $this->readUntil($ann, 'presence.joined');
+            self::assertStringContainsString("event: presence.joined\ndata: {\"channel\":\"presence-room.lobby\",\"data\":{\"id\":2,\"name\":\"Bob\"}}", $joined);
+            self::assertStringNotContainsString('"data":{"id":1,"name":"Ann"}}', $joined, 'a member never receives their own join');
             fclose($bob);
             self::assertStringContainsString('"data":{"id":2,"name":"Bob"}', $this->readUntil($ann, 'presence.left'), 'leaving is announced');
         } finally {

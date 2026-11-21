@@ -72,6 +72,8 @@ final class Console
             new Commands\MigrateStatusCommand($this),
             new Commands\SeedCommand($this),
             new Commands\QueueWorkCommand($this),
+            new Commands\DownCommand($this),
+            new Commands\UpCommand($this),
             new Commands\ScheduleRunCommand($this),
             new Commands\ScheduleWorkCommand($this),
             new Commands\ScheduleListCommand($this),

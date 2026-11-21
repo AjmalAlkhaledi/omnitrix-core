@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Omnitrix\Queue;
 
+use Closure;
 use InvalidArgumentException;
 use Omnitrix\Core\Log\JsonLogger;
 use Omnitrix\Core\Queue\Job;
@@ -74,6 +75,21 @@ final class Worker
     }
 
     /** Processes jobs until terminated; returns 0 after a graceful stop. */
+    /** @var (Closure(): bool)|null */
+    private ?Closure $paused = null;
+
+    /**
+     * No new jobs are taken while `$paused` returns true.
+     *
+     * @param Closure(): bool $paused
+     */
+    public function pauseWhen(Closure $paused): self
+    {
+        $this->paused = $paused;
+
+        return $this;
+    }
+
     public function run(): int
     {
         if ($this->handlers === []) {
@@ -82,6 +98,9 @@ final class Worker
         $body = function (): void {
             $client = new RedisClient($this->redis);
             $consumer = new QueueConsumer(new RedisQueue($client), $this->handlers, $this->queue, $this->concurrency, $this->jobTimeout, $this->backoffBase, logger: $this->logger);
+            if ($this->paused !== null) {
+                $consumer->pauseWhen($this->paused);
+            }
             $signals = new SignalHandler();
             $signals->onTerminate(static function () use ($consumer): void {
                 $consumer->stop();

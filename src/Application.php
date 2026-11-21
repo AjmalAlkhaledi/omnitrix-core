@@ -52,6 +52,8 @@ use Omnitrix\Http\HttpKernel;
 use Omnitrix\Http\Middleware\MiddlewareInterface;
 use Omnitrix\Mail\Mailer;
 use Omnitrix\Mail\MailerFactory;
+use Omnitrix\Maintenance\MaintenanceMode;
+use Omnitrix\Maintenance\PreventRequestsDuringMaintenance;
 use Omnitrix\Notifications\NotificationSender;
 use Omnitrix\Observability\HealthCheck;
 use Omnitrix\RateLimit\Limit;
@@ -467,6 +469,12 @@ final class Application
     {
         $this->router->compile();
         $kernel = new HttpKernel($this->router, new HandlerResolver($container), new ErrorResponseFactory($this->debug), $this->runtime->exceptionHandler());
+        // Maintenance mode before routing: while down, nothing else runs (php omnitrix down / up).
+        $kernel->beforeRouting(static function (Http\Request $request) use ($container): ?Http\Response {
+            $mode = $container !== null && $container->has(MaintenanceMode::class) ? $container->get(MaintenanceMode::class) : null;
+
+            return $mode instanceof MaintenanceMode ? (new PreventRequestsDuringMaintenance($mode))->check($request) : null;
+        });
         $kernel->middleware(...$this->middleware);
 
         return $kernel;
@@ -857,6 +865,9 @@ final class Application
             $container->instance(Mailer::class, $mailerService);
             $container->instance(Contracts\Mailer::class, $mailerService);
         }
+        $maintenance = is_array($app['maintenance'] ?? null) ? $app['maintenance'] : [];
+        /** @var array<string, mixed> $maintenance */
+        $container->instance(MaintenanceMode::class, MaintenanceMode::fromConfig($maintenance, $redisClient));
         $mailer = $container->has(Mailer::class) ? $container->get(Mailer::class) : null;
         $producer = $container->has(QueueProducer::class) ? $container->get(QueueProducer::class) : null;
         $container->instance(NotificationSender::class, new NotificationSender($mailer instanceof Mailer ? $mailer : null, $producer instanceof QueueProducer ? $producer->dispatch(...) : null));

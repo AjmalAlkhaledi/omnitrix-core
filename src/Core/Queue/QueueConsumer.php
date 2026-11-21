@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Omnitrix\Core\Queue;
 
+use Closure;
 use Omnitrix\Core\Concurrency\Async;
 use Omnitrix\Core\Concurrency\TimeoutException;
 use Omnitrix\Core\Runtime\Context\ContextStorage;
@@ -40,6 +41,11 @@ final class QueueConsumer
     private array $stats = ['processed' => 0, 'failed' => 0, 'retried' => 0, 'buried' => 0, 'recovered' => 0];
 
     private int $inFlight = 0;
+
+    /** @var (Closure(): bool)|null */
+    private ?Closure $paused = null;
+
+    private bool $wasPaused = false;
 
     /**
      * @param array<string, callable(array<string, mixed>, Job): void> $handlers job name => handler
@@ -89,6 +95,17 @@ final class QueueConsumer
         $this->logger->info('queue consumer stopped', ['consumer' => $this->consumerId] + $this->stats);
     }
 
+    /**
+     * Takes no new jobs while `$paused` returns true (maintenance mode); jobs already running
+     * finish normally.
+     *
+     * @param Closure(): bool $paused
+     */
+    public function pauseWhen(Closure $paused): void
+    {
+        $this->paused = $paused;
+    }
+
     public function stop(): void
     {
         $this->running = false;
@@ -108,6 +125,10 @@ final class QueueConsumer
     private function lane(): void
     {
         while ($this->isRunning()) {
+            if ($this->paused !== null && $this->isPaused()) {
+                Sleep::milliseconds(1000);
+                continue;
+            }
             try {
                 $reserved = $this->queue->reserve($this->queueName, $this->consumerId, 1);
             } catch (Throwable $e) {
@@ -126,6 +147,21 @@ final class QueueConsumer
                 $this->inFlight--;
             }
         }
+    }
+
+    private function isPaused(): bool
+    {
+        try {
+            $paused = $this->paused !== null && ($this->paused)();
+        } catch (Throwable) {
+            $paused = $this->wasPaused;
+        }
+        if ($paused !== $this->wasPaused) {
+            $this->wasPaused = $paused;
+            $this->logger->info($paused ? 'queue consumer paused (maintenance mode)' : 'queue consumer resumed', ['consumer' => $this->consumerId]);
+        }
+
+        return $paused;
     }
 
     private function process(Job $job, string $raw): void

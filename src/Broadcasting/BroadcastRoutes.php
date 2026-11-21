@@ -53,7 +53,7 @@ use const JSON_UNESCAPED_UNICODE;
  * receives `event: {name}` / `data: {"channel", "data"}` messages; a comment line every
  * {@see $heartbeatSeconds} keeps proxies from closing it. Private and presence channels are authorized with the channel
  * callbacks; presence channels also send `presence.members` on connect and `presence.joined` /
- * `presence.left` to the others.
+ * `presence.left` to the others (never a member's own join).
  */
 final class BroadcastRoutes
 {
@@ -165,6 +165,9 @@ final class BroadcastRoutes
                 $decoded = is_string($message) ? json_decode($message, true) : null;
                 if (!is_array($decoded) || !is_string($decoded['event'] ?? null)) {
                     continue;
+                }
+                if ($decoded['event'] === 'presence.joined' && is_string($channel) && isset($members[$channel]) && ($decoded['data'] ?? null) === $members[$channel]) {
+                    continue; // our own join: it is in presence.members already (and arrives or not depending on timing)
                 }
                 if (!$stream->write(self::message($decoded['event'], is_string($channel) ? $channel : '', $decoded['data'] ?? null))) {
                     break;
