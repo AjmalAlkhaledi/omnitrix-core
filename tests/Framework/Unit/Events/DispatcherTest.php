@@ -13,6 +13,7 @@ use Omnitrix\Tests\Support\TestCase;
 use PHPUnit\Framework\AssertionFailedError;
 use PHPUnit\Framework\Attributes\CoversClass;
 use Psr\EventDispatcher\StoppableEventInterface;
+use stdClass;
 
 interface ShippingEvent {}
 
@@ -158,7 +159,7 @@ final class DispatcherTest extends TestCase
     public function testAfterCommitEventsWaitForTheTransaction(): void
     {
         $pending = [];
-        $transaction = new \stdClass();
+        $transaction = new stdClass();
         $transaction->open = true;
         $events = new Dispatcher(null, null, static function (callable $callback) use (&$pending, $transaction): bool {
             if ($transaction->open !== true) {

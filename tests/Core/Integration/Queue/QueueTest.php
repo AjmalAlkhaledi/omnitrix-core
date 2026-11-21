@@ -9,6 +9,9 @@ use Omnitrix\Core\Queue\QueueProducer;
 use Omnitrix\Core\Queue\RedisQueue;
 use Omnitrix\Core\Redis\RedisClient;
 use Omnitrix\Core\Redis\RedisConfig;
+use Omnitrix\Core\Runtime\Context\ContextStorage;
+use Omnitrix\Core\Runtime\Context\RequestContext;
+use Omnitrix\Core\Runtime\Context\SharedContext;
 use Omnitrix\Core\Runtime\Coroutine\Sleep;
 use Omnitrix\Core\Tests\Support\ProcessRunner;
 use Omnitrix\Core\Tests\Support\Services;
@@ -18,10 +21,12 @@ use Redis;
 use RedisCluster;
 
 use function dirname;
+use function explode;
 use function is_array;
 use function json_decode;
 use function microtime;
 use function preg_match;
+use function str_contains;
 use function uniqid;
 
 use const SIGKILL;
@@ -110,6 +115,31 @@ final class QueueTest extends TestCase
         $t = microtime(true);
         self::assertTrue(self::eventually(fn(): bool => $this->redis()->llen('done') === 24, 5.0));
         self::assertLessThan(2.0, microtime(true) - $t, '4 × 1 s jobs ran concurrently on 4 lanes');
+    }
+
+    public function testTheSharedContextTravelsWithJobsAndIntoLogs(): void
+    {
+        $context = RequestContext::create();
+        ContextStorage::bind($context);
+        try {
+            SharedContext::set('tenant', 7);
+            SharedContext::set('api_key', 'k-1', hidden: true);
+            (new QueueProducer($this->queue(), $this->queueName))->dispatch('context');
+        } finally {
+            ContextStorage::unbind();
+        }
+        $worker = $this->startWorker();
+        self::assertTrue(self::eventually(fn(): bool => $this->redis()->llen('done') === 1), 'job executed');
+        self::assertSame('{"visible":{"tenant":7},"hidden":{"api_key":"k-1"}}', $this->redis()->lpop('done'));
+        self::assertTrue(self::eventually(static fn(): bool => str_contains($worker->stderr(), '"message":"job with context"')));
+        $line = '';
+        foreach (explode("\n", $worker->stderr()) as $candidate) {
+            if (str_contains($candidate, '"message":"job with context"')) {
+                $line = $candidate;
+            }
+        }
+        self::assertStringContainsString('"context":{"tenant":7}', $line, 'visible values are logged');
+        self::assertStringNotContainsString('k-1', $line, 'hidden values are not');
     }
 
     public function testRetriesWithBackoffAndDeadLetters(): void

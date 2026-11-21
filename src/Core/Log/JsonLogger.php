@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Omnitrix\Core\Log;
 
 use DateTimeImmutable;
+use Omnitrix\Core\Runtime\Context\SharedContext;
 use Psr\Log\AbstractLogger;
 use Psr\Log\InvalidArgumentException;
 use Psr\Log\LogLevel;
@@ -92,6 +93,10 @@ final class JsonLogger extends AbstractLogger
 
         foreach ($context as $key => $value) {
             $record[$key] = $this->normalise((string) $key, $value);
+        }
+        $shared = SharedContext::all();
+        if ($shared !== [] && !isset($record['context'])) {
+            $record['context'] = $this->normalise('context', $shared);
         }
 
         $line = json_encode($record, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE | JSON_PARTIAL_OUTPUT_ON_ERROR);

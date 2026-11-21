@@ -14,6 +14,7 @@ use Omnitrix\Core\Queue\QueueConsumer;
 use Omnitrix\Core\Queue\RedisQueue;
 use Omnitrix\Core\Redis\RedisClient;
 use Omnitrix\Core\Redis\RedisConfig;
+use Omnitrix\Core\Runtime\Context\SharedContext;
 use Omnitrix\Core\Runtime\Coroutine\Sleep;
 use Omnitrix\Core\Runtime\Shutdown\SignalHandler;
 use OpenSwoole\Coroutine;
@@ -48,6 +49,11 @@ Coroutine::run(static function () use ($env): void {
                 throw new RuntimeException('transient failure #' . $job->attempts);
             }
             $redis->rpush('done', (string) json_encode(['id' => $payload['id'] ?? null, 'attempt' => $job->attempts]));
+        },
+        'context' => static function () use ($redis): void {
+            // The shared context of the dispatching request is restored for the job.
+            (new JsonLogger())->info('job with context');
+            $redis->rpush('done', (string) json_encode(SharedContext::dehydrate()));
         },
         'always-fails' => static function (): never {
             throw new DomainException('permanent failure');

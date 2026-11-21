@@ -6,6 +6,9 @@ namespace Omnitrix\Core\Queue;
 
 use Omnitrix\Core\Concurrency\Async;
 use Omnitrix\Core\Concurrency\TimeoutException;
+use Omnitrix\Core\Runtime\Context\ContextStorage;
+use Omnitrix\Core\Runtime\Context\RequestContext;
+use Omnitrix\Core\Runtime\Context\SharedContext;
 use Omnitrix\Core\Runtime\Coroutine\Sleep;
 use Omnitrix\Core\Support\Id;
 use OpenSwoole\Coroutine;
@@ -133,7 +136,16 @@ final class QueueConsumer
                 throw new QueueException("No handler registered for job '{$job->name}'");
             }
             Async::withTimeout(static function () use ($handler, $job): void {
-                $handler($job->payload, $job);
+                // Each job runs in its own context, with the shared context of the request that
+                // dispatched it (log lines and further dispatches carry it on).
+                $context = RequestContext::create();
+                SharedContext::hydrate($context, $job->context);
+                ContextStorage::bind($context);
+                try {
+                    $handler($job->payload, $job);
+                } finally {
+                    ContextStorage::unbind();
+                }
             }, $this->jobTimeout);
             $this->queue->ack($this->queueName, $this->consumerId, $raw);
             $this->stats['processed']++;

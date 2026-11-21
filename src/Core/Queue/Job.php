@@ -34,6 +34,8 @@ final readonly class Job
         public int $maxAttempts = 3,
         public float $createdAt = 0.0,
         public ?string $lastError = null,
+        /** @var array<string, mixed> shared context of the dispatching request (see SharedContext) */
+        public array $context = [],
     ) {
         if ($name === '') {
             throw new InvalidArgumentException('Job name must be non-empty');
@@ -43,15 +45,18 @@ final readonly class Job
         }
     }
 
-    /** @param array<string, mixed> $payload */
-    public static function create(string $name, array $payload, string $queue = 'default', int $maxAttempts = 3): self
+    /**
+     * @param array<string, mixed> $payload
+     * @param array<string, mixed> $context
+     */
+    public static function create(string $name, array $payload, string $queue = 'default', int $maxAttempts = 3, array $context = []): self
     {
-        return new self(Id::generate(), $name, $payload, $queue, 0, $maxAttempts, microtime(true));
+        return new self(Id::generate(), $name, $payload, $queue, 0, $maxAttempts, microtime(true), null, $context);
     }
 
     public function withAttempt(?string $error): self
     {
-        return new self($this->id, $this->name, $this->payload, $this->queue, $this->attempts + 1, $this->maxAttempts, $this->createdAt, $error);
+        return new self($this->id, $this->name, $this->payload, $this->queue, $this->attempts + 1, $this->maxAttempts, $this->createdAt, $error, $this->context);
     }
 
     public function hasAttemptsLeft(): bool
@@ -65,7 +70,7 @@ final readonly class Job
             return json_encode([
                 'id' => $this->id, 'name' => $this->name, 'payload' => $this->payload, 'queue' => $this->queue,
                 'attempts' => $this->attempts, 'max_attempts' => $this->maxAttempts, 'created_at' => $this->createdAt, 'last_error' => $this->lastError,
-            ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION);
+            ] + ($this->context === [] ? [] : ['context' => $this->context]), JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION);
         } catch (JsonException $e) {
             throw new InvalidArgumentException('Job payload cannot be encoded as JSON: ' . $e->getMessage(), 0, $e);
         }
@@ -86,6 +91,10 @@ final readonly class Job
             $payload[(string) $k] = $v;
         }
         $created = $data['created_at'] ?? 0.0;
+        $context = [];
+        foreach (is_array($data['context'] ?? null) ? $data['context'] : [] as $k => $v) {
+            $context[(string) $k] = $v;
+        }
 
         return new self(
             $data['id'],
@@ -96,6 +105,7 @@ final readonly class Job
             is_int($data['max_attempts'] ?? null) ? $data['max_attempts'] : 3,
             is_float($created) || is_int($created) ? (float) $created : 0.0,
             is_string($data['last_error'] ?? null) ? $data['last_error'] : null,
+            $context,
         );
     }
 }

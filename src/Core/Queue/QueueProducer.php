@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Omnitrix\Core\Queue;
 
+use Omnitrix\Core\Runtime\Context\SharedContext;
+
 /** Producer side of the queue, used by request handlers (one per worker). */
 final class QueueProducer
 {
@@ -16,7 +18,9 @@ final class QueueProducer
      */
     public function dispatch(string $name, array $payload = [], float $delay = 0.0, ?string $queue = null, ?int $maxAttempts = null): string
     {
-        $job = Job::create($name, $payload, $queue ?? $this->defaultQueue, $maxAttempts ?? $this->defaultMaxAttempts);
+        $shared = SharedContext::dehydrate();
+        $context = $shared['visible'] === [] && $shared['hidden'] === [] ? [] : $shared;
+        $job = Job::create($name, $payload, $queue ?? $this->defaultQueue, $maxAttempts ?? $this->defaultMaxAttempts, $context);
         $this->queue->push($job, $delay);
 
         return $job->id;
