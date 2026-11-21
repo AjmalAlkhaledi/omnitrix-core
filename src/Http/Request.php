@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Omnitrix\Http;
 
 use Omnitrix\Core\Http\Server\IncomingRequest;
+use Omnitrix\Core\Runtime\Context\ContextStorage;
 use Omnitrix\Core\Runtime\Context\RequestContext;
 use Omnitrix\Validation\Validator;
 
@@ -35,12 +36,23 @@ final class Request
     private array $attributes = [];
 
     /** @internal requests are created by the framework's HTTP kernel */
+    /** Request-context key holding the current request. */
+    public const string CONTEXT_KEY = 'http.request';
+
     /** @var array<string, string>|null cookies after middleware transformed them */
     private ?array $cookies = null;
 
     public function __construct(private readonly IncomingRequest $incoming, private readonly RequestContext $context) {}
 
     /** @internal transport-level request; application code uses the accessors on this class */
+    /** The request being handled in this coroutine (or an ancestor), if any. */
+    public static function current(): ?self
+    {
+        $request = ContextStorage::current()?->get(self::CONTEXT_KEY);
+
+        return $request instanceof self ? $request : null;
+    }
+
     public function incoming(): IncomingRequest
     {
         return $this->incoming;

@@ -13,6 +13,7 @@ use JsonException;
 use JsonSerializable;
 use LogicException;
 use Omnitrix\Contracts\EventDispatcher;
+use Omnitrix\Contracts\Hasher;
 use Omnitrix\Core\Database\Database;
 use Omnitrix\Core\Database\Query\Builder;
 use Omnitrix\Core\Database\Query\Expression;
@@ -45,11 +46,14 @@ use function is_string;
 use function json_decode;
 use function json_encode;
 use function method_exists;
+use function password_get_info;
+use function password_hash;
 use function sort;
 use function strrchr;
 use function substr;
 
 use const JSON_THROW_ON_ERROR;
+use const PASSWORD_BCRYPT;
 
 /**
  * A database row as an object, with relationships.
@@ -737,6 +741,13 @@ abstract class Model implements ArrayAccess, JsonSerializable
         }
         if ($value instanceof DateTimeInterface) {
             return $value->format($type === 'date' ? 'Y-m-d' : 'Y-m-d H:i:s');
+        }
+        if ($type === 'hashed' && is_string($value) && $value !== '' && password_get_info($value)['algo'] === null) {
+            // A plain password: hash it (values that already are hashes are kept).
+            $container = Facade::container();
+            $hasher = $container !== null && $container->has(Hasher::class) ? $container->get(Hasher::class) : null;
+
+            return $hasher instanceof Hasher ? $hasher->make($value) : password_hash($value, PASSWORD_BCRYPT);
         }
         if (($type === 'array' || $type === 'json') && !is_string($value)) {
             return json_encode($value, JSON_THROW_ON_ERROR);

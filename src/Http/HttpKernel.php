@@ -74,7 +74,8 @@ final class HttpKernel
     public function __invoke(IncomingRequest $incoming, ResponseWriter $writer, RequestContext $context): void
     {
         $request = new Request($incoming, $context);
-        $response = $this->handle($request);
+        $context->set(Request::CONTEXT_KEY, $request);
+        $response = CookieJar::flush($this->handle($request));
         $context->set('http.route', $request->routePattern() ?? 'unmatched');
         $this->emitter->emit($response, $writer);
     }

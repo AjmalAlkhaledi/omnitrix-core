@@ -6,6 +6,7 @@ namespace Omnitrix;
 
 use InvalidArgumentException;
 use LogicException;
+use Omnitrix\Auth\AuthManager;
 use Omnitrix\Contracts\Encrypter;
 use Omnitrix\Contracts\EventDispatcher;
 use Omnitrix\Contracts\Hasher;
@@ -707,6 +708,15 @@ final class Application
         }
 
         $container->instance(EventDispatcher::class, $this->makeDispatcher($container, $config));
+
+        $auth = $config['auth'] ?? null;
+        if (is_array($auth)) {
+            /** @var array<string, mixed> $auth */
+            $hasher = $container->get(Hasher::class);
+            if ($hasher instanceof Hasher) {
+                $container->instance(AuthManager::class, new AuthManager($auth, $hasher));
+            }
+        }
 
         $mail = $config['mail'] ?? null;
         if (is_array($mail)) {

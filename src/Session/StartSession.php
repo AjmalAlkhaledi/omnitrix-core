@@ -9,6 +9,7 @@ use Omnitrix\Contracts\SessionHandler;
 use Omnitrix\Encryption\DecryptException;
 use Omnitrix\Facades\Facade;
 use Omnitrix\Http\Cookie;
+use Omnitrix\Http\CookieJar;
 use Omnitrix\Http\Middleware\MiddlewareInterface;
 use Omnitrix\Http\Middleware\Next;
 use Omnitrix\Http\Request;
@@ -45,7 +46,7 @@ final class StartSession implements MiddlewareInterface
         $request->setAttribute(self::ATTRIBUTE, $store);
         $request->context()->set(self::ATTRIBUTE, $store);
 
-        $response = $next($request);
+        $response = CookieJar::flush($next($request));
 
         $store->ageFlashData();
         if (!$store->isStarted()) {
