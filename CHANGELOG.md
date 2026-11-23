@@ -6,6 +6,10 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-23
+
+Upgrade notes from 0.3: see Reference → Versioning and upgrades in the documentation.
+
 ### Added
 
 - **File uploads**: `$request->file()`, `allFiles()`, `hasFile()` with `UploadedFile` (type and
